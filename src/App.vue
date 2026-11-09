@@ -97,6 +97,27 @@ const fileSortLabel = computed(
 )
 const fileSortDirLabel = computed(() => (fileSortAsc.value ? '↑' : '↓'))
 const clipSortLabel = computed(() => (clipSort.value === 'time' ? '按时间' : '按名称'))
+
+// 命中片段高亮:按查询词(不区分大小写)把文本切成 普通/命中 交替段,模板循环渲染
+function highlight(text: string, query: string): Array<{ t: string; hit: boolean }> {
+  const q = query.trim()
+  if (!q) return [{ t: text, hit: false }]
+  const lower = text.toLowerCase()
+  const ql = q.toLowerCase()
+  const parts: Array<{ t: string; hit: boolean }> = []
+  let i = 0
+  while (i < text.length) {
+    const idx = lower.indexOf(ql, i)
+    if (idx < 0) {
+      parts.push({ t: text.slice(i), hit: false })
+      break
+    }
+    if (idx > i) parts.push({ t: text.slice(i, idx), hit: false })
+    parts.push({ t: text.slice(idx, idx + q.length), hit: true })
+    i = idx + q.length
+  }
+  return parts
+}
 const dragging = ref(false)
 const uploading = ref(false)
 const textInput = ref('')
@@ -849,7 +870,14 @@ onUnmounted(() => {
                   >
                     <span class="ext">{{ extOf(f.name) }}</span>
                     <span class="row-text">
-                      <span class="row-name">{{ f.name }}</span>
+                      <span class="row-name"
+                        ><template
+                          v-for="(seg, si) in highlight(f.name, fileQuery)"
+                          :key="si"
+                          ><mark v-if="seg.hit" class="hl">{{ seg.t }}</mark
+                          ><template v-else>{{ seg.t }}</template></template
+                        ></span
+                      >
                       <span class="row-sub">{{ fmtSize(f.size) }} · {{ timeAgo(f.modified) }}</span>
                     </span>
                   </button>
@@ -985,7 +1013,14 @@ onUnmounted(() => {
               <li v-for="c in filteredClips" :key="c.id">
                 <button class="row-main clip-row" title="点击复制" @click="copyText(c.content)">
                   <span class="row-text">
-                    <span class="clip-text">{{ c.content }}</span>
+                    <span class="clip-text"
+                      ><template
+                        v-for="(seg, si) in highlight(c.content, clipQuery)"
+                        :key="si"
+                        ><mark v-if="seg.hit" class="hl">{{ seg.t }}</mark
+                        ><template v-else>{{ seg.t }}</template></template
+                      ></span
+                    >
                     <span class="row-sub">
                       {{ c.source === 'phone' ? '手机' : '电脑' }} · {{ fmtClipTime(c.created) }}
                     </span>
@@ -1935,6 +1970,18 @@ li:has(.check.on) .row-main {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* 搜索命中高亮 */
+.hl {
+  background: #ffe27a;
+  color: #17203a;
+  border-radius: 3px;
+  padding: 0 1px;
+  margin: 0 -1px;
+}
+.page.dark .hl {
+  background: #8a6d1f;
+  color: #fff;
 }
 .row-sub {
   font-size: 11.5px;
