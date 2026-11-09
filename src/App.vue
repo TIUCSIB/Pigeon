@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -46,10 +46,57 @@ const textInput = ref('')
 const sending = ref(false)
 const toasts = ref<{ id: number; text: string }[]>([])
 const deleteTarget = ref<string | null>(null)
-// 确认弹窗类型:file=删单个文件 clips-clear=清空记录 files-clear=清空文件
-type ConfirmKind = 'file' | 'clips-clear' | 'files-clear'
+// 确认弹窗类型:file=删单个文件 clips-clear=清空记录 files-clear=清空文件 files-batch=批量删除选中
+type ConfirmKind = 'file' | 'clips-clear' | 'files-clear' | 'files-batch'
 const confirmKind = ref<ConfirmKind | null>(null)
 const deleteClipId = ref<number | null>(null)
+
+// 文件多选模式
+const selecting = ref(false)
+const selected = ref<Set<string>>(new Set())
+
+function toggleSelectMode() {
+  selecting.value = !selecting.value
+  selected.value = new Set()
+}
+
+function toggleSelected(name: string) {
+  const next = new Set(selected.value)
+  if (next.has(name)) {
+    next.delete(name)
+  } else {
+    next.add(name)
+  }
+  selected.value = next
+}
+
+const allSelected = computed(
+  () => files.value.length > 0 && selected.value.size === files.value.length,
+)
+
+function toggleSelectAll() {
+  selected.value = allSelected.value ? new Set() : new Set(files.value.map((f) => f.name))
+}
+
+async function deleteSelected() {
+  const names = Array.from(selected.value)
+  confirmKind.value = null
+  selecting.value = false
+  selected.value = new Set()
+  let ok = 0
+  for (const name of names) {
+    try {
+      await invoke('delete_file', { name })
+      ok++
+    } catch (e) {
+      toast(`${name}: ${e}`)
+    }
+  }
+  if (ok > 0) {
+    toast(`已删除 ${ok} 个文件`)
+    await refreshFiles()
+  }
+}
 // 桌面 UI 自己调 HTTP 上传接口(与手机端同通道)
 const uploadUrl = ref('')
 
@@ -225,6 +272,10 @@ async function doDelete() {
     } catch (e) {
       toast(`${e}`)
     }
+    return
+  }
+  if (confirmKind.value === 'files-batch') {
+    await deleteSelected()
   }
 }
 
@@ -595,18 +646,46 @@ onUnmounted(() => {
             <div class="list-head">
               <span class="sec">已共享</span>
               <span class="sec-n">{{ files.length }}</span>
-              <button class="link danger-link" @click="confirmKind = 'files-clear'">清空</button>
+              <button v-if="!selecting" class="link danger-link" @click="confirmKind = 'files-clear'">
+                清空
+              </button>
+              <button class="link" @click="toggleSelectMode">
+                {{ selecting ? '取消选择' : '选择' }}
+              </button>
             </div>
             <ul class="list">
               <li v-for="f in files" :key="f.name">
-                <button class="row-main" :title="`在文件夹中显示 ${f.name}`" @click="reveal(f.name)">
+                <!-- 多选模式:行首勾选框,点行切换选中 -->
+                <button
+                  v-if="selecting"
+                  class="check"
+                  :class="{ on: selected.has(f.name) }"
+                  @click="toggleSelected(f.name)"
+                >
+                  <svg v-if="selected.has(f.name)" viewBox="0 0 24 24">
+                    <path
+                      fill="none"
+                      stroke="currentColor"
+                      stroke-width="2.5"
+                      stroke-linecap="round"
+                      stroke-linejoin="round"
+                      d="M20 6L9 17l-5-5"
+                    />
+                  </svg>
+                </button>
+                <button
+                  class="row-main"
+                  :class="{ dim: selecting }"
+                  :title="selecting ? '' : `在文件夹中显示 ${f.name}`"
+                  @click="selecting ? toggleSelected(f.name) : reveal(f.name)"
+                >
                   <span class="ext">{{ extOf(f.name) }}</span>
                   <span class="row-text">
                     <span class="row-name">{{ f.name }}</span>
                     <span class="row-sub">{{ fmtSize(f.size) }} · {{ timeAgo(f.modified) }}</span>
                   </span>
                 </button>
-                <span class="row-ops">
+                <span v-if="!selecting" class="row-ops">
                   <button class="op" title="复制下载链接" @click="copyFileUrl(f.name)">
                     <svg viewBox="0 0 24 24">
                       <path
@@ -626,6 +705,33 @@ onUnmounted(() => {
                 </span>
               </li>
             </ul>
+            <!-- 多选模式下的全选行 -->
+            <div v-if="selecting" class="select-all-row">
+              <button class="check" :class="{ on: allSelected }" @click="toggleSelectAll">
+                <svg v-if="allSelected" viewBox="0 0 24 24">
+                  <path
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2.5"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                    d="M20 6L9 17l-5-5"
+                  />
+                </svg>
+              </button>
+              <span class="sa-t">全选</span>
+            </div>
+            <!-- 批量操作浮条 -->
+            <div v-if="selecting" class="batch-bar">
+              <span class="batch-n">已选 {{ selected.size }} 项</span>
+              <button
+                class="btn primary danger"
+                :disabled="selected.size === 0"
+                @click="confirmKind = 'files-batch'"
+              >
+                删除选中
+              </button>
+            </div>
           </template>
           <p v-else class="empty">还没有文件,拖一个进来试试</p>
 
@@ -760,13 +866,24 @@ onUnmounted(() => {
     <div v-if="confirmKind" class="modal-mask" @click.self="confirmKind = null">
       <div class="modal">
         <h2 class="modal-t">
-          {{ confirmKind === 'file' ? '删除文件' : confirmKind === 'clips-clear' ? '清空文字记录' : '清空共享文件' }}
+          {{
+            confirmKind === 'file'
+              ? '删除文件'
+              : confirmKind === 'clips-clear'
+                ? '清空文字记录'
+                : confirmKind === 'files-batch'
+                  ? '删除选中文件'
+                  : '清空共享文件'
+          }}
         </h2>
         <p v-if="confirmKind === 'file'" class="modal-desc">
           确定删除 <b>{{ deleteTarget }}</b> ?手机端将无法再下载该文件。
         </p>
         <p v-else-if="confirmKind === 'clips-clear'" class="modal-desc">
           确定清空全部 {{ clips.length }} 条文字记录?此操作不可恢复。
+        </p>
+        <p v-else-if="confirmKind === 'files-batch'" class="modal-desc">
+          确定删除选中的 {{ selected.size }} 个文件?此操作不可恢复。
         </p>
         <p v-else class="modal-desc">
           确定清空共享目录中的 {{ files.length }} 个文件?手机端将无法再下载,此操作不可恢复。
@@ -781,6 +898,30 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
+/* 细滚动条,契合扁平主题;颜色走变量,暗色自动跟随 */
+.page ::-webkit-scrollbar,
+html::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.page ::-webkit-scrollbar-track,
+html::-webkit-scrollbar-track {
+  background: transparent;
+}
+.page ::-webkit-scrollbar-thumb,
+html::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 999px;
+}
+.page ::-webkit-scrollbar-thumb:hover,
+html::-webkit-scrollbar-thumb:hover {
+  background: var(--text-4);
+}
+.page ::-webkit-scrollbar-corner,
+html::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* ========== 基础 ========== */
 .page {
   /* 亮色主题变量(暗色覆盖见 .dark) */
@@ -809,11 +950,12 @@ onUnmounted(() => {
   --toast-bg: #1a1d24;
   --drag-tint: rgba(28, 111, 216, 0.07);
   height: 100vh;
+  box-sizing: border-box; /* 底部 padding 要算进 100vh,否则会被裁到窗口外 */
   /* 画布底色,内容卡片浮在其上 */
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  padding: 0 14px 16px;
+  padding: 0 14px 22px;
   overflow: hidden;
   user-select: none;
   display: flex;
@@ -1309,6 +1451,78 @@ onUnmounted(() => {
 }
 .row-main:hover {
   background: var(--hover);
+}
+/* 多选模式下行淡化,点行即勾选 */
+.row-main.dim {
+  opacity: 0.75;
+}
+li:has(.check.on) .row-main {
+  background: var(--accent-bg);
+}
+
+/* 多选勾选框 */
+.check {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border: 1.5px solid var(--border);
+  border-radius: 6px;
+  background: var(--card);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  padding: 0;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.check svg {
+  width: 12px;
+  height: 12px;
+}
+.check:hover {
+  border-color: var(--accent);
+}
+.check.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* 全选行 */
+.select-all-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 10px 2px;
+}
+.sa-t {
+  font-size: 12px;
+  color: var(--text-3);
+}
+
+/* 批量操作浮条 */
+.batch-bar {
+  position: sticky;
+  bottom: 0;
+  margin: 12px -22px -22px;
+  padding: 10px 22px;
+  background: var(--card);
+  border-top: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.batch-n {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.batch-bar .btn.primary.danger:disabled {
+  background: var(--accent-bg);
+  color: var(--text-4);
 }
 .ext {
   flex: none;
