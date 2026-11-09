@@ -98,6 +98,7 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         .route(&format!("{p}/"), get(mobile_home))
         .route(&format!("{p}/app.js"), get(mobile_js))
         .route(&format!("{p}/style.css"), get(mobile_css))
+        .route(&format!("{p}/logo.png"), get(mobile_logo))
         .route(&format!("{p}/api/events"), get(sse_events))
         .route(
             &format!("{p}/api/upload"),
@@ -174,6 +175,18 @@ async fn mobile_js() -> Response {
 
 async fn mobile_css() -> Response {
     static_response(MOBILE_CSS, "text/css; charset=utf-8")
+}
+
+/// 品牌 logo(P 鸽标),应用图标同源;favicon 也指向这里
+async fn mobile_logo() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        LOGO_PNG,
+    )
+        .into_response()
 }
 
 /// SSE:文件列表或文字记录任一变动时推送,手机端收到后刷新
@@ -862,6 +875,9 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
 
 // ---------- 手机端页面(内嵌,零外部依赖) ----------
 
+/// 品牌 logo,与 src-tauri/icons 同源(app-icon.png 派生)
+static LOGO_PNG: &[u8] = include_bytes!("../../public/logo.png");
+
 // 注意:内容含 "# 序列(SVG fill="#fff"),必须用 r## 定界
 const MOBILE_HTML: &str = r##"<!doctype html>
 <html lang="zh-CN">
@@ -869,12 +885,14 @@ const MOBILE_HTML: &str = r##"<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Pigeon</title>
+<link rel="icon" type="image/png" href="logo.png">
+<link rel="apple-touch-icon" href="logo.png">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <header>
   <div class="brand">
-    <span class="logo"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#fff" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></span>
+    <span class="logo"><img src="logo.png" alt="Pigeon" width="42" height="42"></span>
     <div><h1>Pigeon</h1><p id="host"></p></div>
   </div>
   <nav class="tabs">
@@ -945,9 +963,9 @@ header {
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo {
-  width: 42px; height: 42px; border-radius: 12px; background: rgba(255,255,255,.2);
-  display: flex; align-items: center; justify-content: center; flex: none;
+  width: 42px; height: 42px; flex: none;
 }
+.logo img { width: 42px; height: 42px; border-radius: 12px; display: block; }
 h1 { font-size: 19px; }
 #host { font-size: 12px; opacity: .85; font-family: ui-monospace, Consolas, monospace; }
 

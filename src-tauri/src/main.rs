@@ -4,6 +4,7 @@ mod clips;
 mod files;
 mod server;
 mod settings;
+mod tray;
 #[cfg(windows)]
 mod window_style;
 
@@ -99,6 +100,9 @@ fn main() {
                 }
             }
 
+            // 6. 系统托盘:关窗不退出,常驻方便手机随时连
+            tray::setup(app.handle())?;
+
             // 5. 后台跑 HTTP 服务(from_std 需要 Tokio 运行时,必须在 spawn 的 async 块里做)
             let handle2 = app.handle().clone();
             tauri::async_runtime::spawn(async move {
@@ -118,8 +122,24 @@ fn main() {
             });
             Ok(())
         })
-        .run(tauri::generate_context!())
-        .expect("error while running tauri application");
+        .on_window_event(|window, event| {
+            // 点关闭 = 收进托盘,常驻后台方便手机随时连
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                let _ = window.hide();
+                api.prevent_close();
+            }
+        })
+        .build(tauri::generate_context!())
+        .expect("error while building tauri application")
+        .run(|_app, event| {
+            if let tauri::RunEvent::ExitRequested { code, api, .. } = event {
+                // code = None:全部窗口关闭引发的隐式退出 -> 拒绝,保持托盘常驻
+                // code = Some(_):托盘菜单"退出"(app.exit)显式触发 -> 放行
+                if code.is_none() {
+                    api.prevent_exit();
+                }
+            }
+        });
 }
 
 /// 通过 UDP connect 技巧拿本机出口 IP(无需真实发包)

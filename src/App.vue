@@ -575,6 +575,10 @@ onMounted(async () => {
     }),
   )
 
+  // 托盘菜单"复制连接地址":复制逻辑在前端,复用现有 copyUrl
+  // 事件名须与 src-tauri/src/tray.rs 的 COPY_URL_EVENT 一致
+  unlisteners.push(await listen('tray-copy-url', () => void copyUrl()))
+
   unlisteners.push(
     await listen<{ name: string; size: number; source: string }>('file-added', async (event) => {
       await refreshFiles()
@@ -620,7 +624,7 @@ onUnmounted(() => {
       <header class="titlebar" data-tauri-drag-region>
         <div class="brand" data-tauri-drag-region>
           <span class="brand-logo" data-tauri-drag-region>
-            <svg viewBox="0 0 24 24" data-tauri-drag-region><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+            <img src="/logo.png" alt="Pigeon" data-tauri-drag-region draggable="false" />
           </span>
           <span class="brand-name" data-tauri-drag-region>Pigeon</span>
         </div>
@@ -656,57 +660,74 @@ onUnmounted(() => {
 
         <!-- ========== 连接 ========== -->
         <div v-show="tab === 'connect'" class="body">
-          <div class="qr-row">
-            <img v-if="qr" class="qr" :src="qr" alt="扫码连接" />
-            <div v-else class="qr qr-loading"></div>
-            <div class="qr-side">
-              <p class="cap">手机扫码连接</p>
-              <div class="input-row">
-                <div class="input readonly">
-                  <svg class="lead" viewBox="0 0 24 24">
-                    <path
-                      fill="currentColor"
-                      d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 1 1 6 0v3H9z"
-                    />
-                  </svg>
-                  <span class="url">{{ info?.url ?? '…' }}</span>
+          <div class="connect-wrap" :class="{ off: !sharing }">
+            <div class="qr-row">
+              <img v-if="qr" class="qr" :src="qr" alt="扫码连接" />
+              <div v-else class="qr qr-loading"></div>
+              <div class="qr-side">
+                <p class="cap">手机扫码连接</p>
+                <div class="input-row">
+                  <div class="input readonly">
+                    <svg class="lead" viewBox="0 0 24 24">
+                      <path
+                        fill="currentColor"
+                        d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 1 1 6 0v3H9z"
+                      />
+                    </svg>
+                    <span class="url">{{ info?.url ?? '…' }}</span>
+                  </div>
+                  <button
+                    class="sq-btn"
+                    title="复制链接"
+                    :disabled="!sharing"
+                    @click="copyUrl"
+                  >
+                    <svg viewBox="0 0 24 24">
+                      <path
+                        fill="currentColor"
+                        d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"
+                      />
+                    </svg>
+                  </button>
                 </div>
-                <button class="sq-btn" title="复制链接" @click="copyUrl">
-                  <svg viewBox="0 0 24 24">
-                    <path
-                      fill="currentColor"
-                      d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"
-                    />
-                  </svg>
+                <p class="sub">手机无需安装,浏览器打开即用</p>
+              </div>
+            </div>
+
+            <div class="hr"></div>
+
+            <div class="field">
+              <label>发送文字到手机</label>
+              <div class="input-row">
+                <input
+                  v-model="textInput"
+                  class="input"
+                  :disabled="!sharing"
+                  placeholder="输入文字,回车发送"
+                  @keydown.enter.exact.prevent="sendText"
+                />
+                <button
+                  class="sq-btn wide"
+                  :disabled="!textInput.trim() || sending || !sharing"
+                  @click="sendText"
+                >
+                  发送
                 </button>
               </div>
-              <p class="sub">手机无需安装,浏览器打开即用</p>
+              <p class="sub">
+                也可以
+                <button class="link" :disabled="!sharing" @click="sendClipboardText">
+                  直接发送剪贴板内容
+                </button>
+              </p>
             </div>
-          </div>
 
-          <div class="hr"></div>
-
-          <div class="field">
-            <label>发送文字到手机</label>
-            <div class="input-row">
-              <input
-                v-model="textInput"
-                class="input"
-                placeholder="输入文字,回车发送"
-                @keydown.enter.exact.prevent="sendText"
-              />
-              <button
-                class="sq-btn wide"
-                :disabled="!textInput.trim() || sending"
-                @click="sendText"
-              >
-                发送
-              </button>
+            <!-- 关闭时的遮罩:灰化内容 + 居中开启入口 -->
+            <div v-if="!sharing" class="off-overlay">
+              <p class="off-t">分享已关闭</p>
+              <p class="off-s">手机端无法访问,二维码与链接已失效</p>
+              <button class="btn primary" @click="toggleSharing">开启分享</button>
             </div>
-            <p class="sub">
-              也可以
-              <button class="link" @click="sendClipboardText">直接发送剪贴板内容</button>
-            </p>
           </div>
         </div>
 
@@ -1171,16 +1192,15 @@ html::-webkit-scrollbar-corner {
 .brand-logo {
   width: 26px;
   height: 26px;
-  border-radius: 8px;
-  background: #1c6fd8;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
-.brand-logo svg {
-  width: 14px;
-  height: 14px;
-  fill: #fff;
+.brand-logo img {
+  width: 26px;
+  height: 26px;
+  -webkit-user-drag: none;
+  user-select: none;
 }
 .brand-name {
   font-size: 15px;
@@ -1501,6 +1521,39 @@ html::-webkit-scrollbar-corner {
 }
 
 /* ========== 连接 ========== */
+.connect-wrap {
+  position: relative;
+  transition: opacity 0.2s, filter 0.2s;
+}
+.connect-wrap.off {
+  opacity: 0.45;
+  filter: grayscale(1);
+  pointer-events: none;
+}
+.connect-wrap.off .off-overlay {
+  pointer-events: auto;
+}
+.off-overlay {
+  position: absolute;
+  inset: -6px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  border-radius: 12px;
+  background: var(--card);
+}
+.off-t {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--text-2);
+}
+.off-s {
+  font-size: 12px;
+  color: var(--text-3);
+  margin-bottom: 8px;
+}
 .qr-row {
   display: flex;
   gap: 20px;
