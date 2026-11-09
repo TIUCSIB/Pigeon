@@ -998,8 +998,8 @@ html::-webkit-scrollbar-corner {
   align-items: center;
   justify-content: space-between;
   height: 46px;
-  margin: 0 -16px; /* 抵消页面左右 padding */
-  padding-left: 16px;
+  margin: 0 -8px; /* 抵消页面左右 padding(与 .page 的 8px 对应) */
+  padding-left: 8px;
   flex: none;
 }
 .titlebar-right {
