@@ -406,7 +406,7 @@ async function sendText() {
     await invoke('send_clip', { content })
     textInput.value = ''
     await refreshClips()
-    toast('已发送到手机')
+    toast('发送成功')
   } catch (e) {
     toast(`发送失败:${e}`)
   } finally {
