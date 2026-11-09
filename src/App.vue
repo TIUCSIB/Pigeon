@@ -325,7 +325,8 @@ async function onDrop(e: DragEvent) {
 
 function applyTheme(dark: boolean) {
   darkMode.value = dark
-  document.documentElement.classList.toggle('dark', dark)
+  // 根元素类驱动 scoped 样式里的 .page.dark 变量;color-scheme 让滚动条等原生控件跟随
+  document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
 }
 
 async function toggleDark() {
@@ -439,7 +440,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="page">
+  <div class="page" :class="{ dark: darkMode }">
     <div class="shell">
       <header class="page-head">
         <div class="brand">
