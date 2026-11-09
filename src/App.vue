@@ -1051,7 +1051,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 11px;
-  padding: 11px 2px;
+  padding: 10px 10px;
   border: 0;
   background: none;
   font-family: inherit;
@@ -1100,6 +1100,7 @@ onUnmounted(() => {
   flex: none;
   display: flex;
   gap: 2px;
+  padding-right: 4px;
   opacity: 0;
   transition: opacity 0.15s;
 }
@@ -1133,7 +1134,7 @@ onUnmounted(() => {
 
 .clip-row {
   align-items: flex-start;
-  padding: 12px 2px;
+  padding: 12px 10px;
 }
 .clip-text {
   font-size: 13px;
