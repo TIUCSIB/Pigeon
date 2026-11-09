@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
 import { readText } from '@tauri-apps/plugin-clipboard-manager'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import QRCode from 'qrcode'
 
 interface ServerInfo {
@@ -55,6 +56,20 @@ const savingSettings = ref(false)
 const settingsLoaded = ref(false)
 // 暗黑模式(即时生效并持久化)
 const darkMode = ref(false)
+// 自绘标题栏
+const maximized = ref(false)
+const appWindow = getCurrentWindow()
+
+async function winMinimize() {
+  await appWindow.minimize()
+}
+async function winToggleMax() {
+  await appWindow.toggleMaximize()
+  maximized.value = await appWindow.isMaximized()
+}
+async function winClose() {
+  await appWindow.close()
+}
 
 let toastSeq = 0
 const unlisteners: UnlistenFn[] = []
@@ -442,14 +457,34 @@ onUnmounted(() => {
 <template>
   <div class="page" :class="{ dark: darkMode }">
     <div class="shell">
-      <header class="page-head">
-        <div class="brand">
-          <span class="brand-logo">
-            <svg viewBox="0 0 24 24"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
+      <!-- 自绘标题栏:整行可拖拽,右侧窗口控制按钮 -->
+      <header class="titlebar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="brand-logo" data-tauri-drag-region>
+            <svg viewBox="0 0 24 24" data-tauri-drag-region><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z" /></svg>
           </span>
-          <span class="brand-name">Pigeon</span>
+          <span class="brand-name" data-tauri-drag-region>Pigeon</span>
         </div>
-        <span v-if="info" class="status"><i></i>{{ info.host }}:{{ info.port }}</span>
+        <div class="titlebar-right">
+          <span v-if="info" class="status" data-tauri-drag-region><i></i>{{ info.host }}:{{ info.port }}</span>
+          <div class="win-btns">
+            <button class="win-btn" title="最小化" @click="winMinimize">
+              <svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1" /></svg>
+            </button>
+            <button class="win-btn" :title="maximized ? '还原' : '最大化'" @click="winToggleMax">
+              <svg v-if="!maximized" viewBox="0 0 10 10">
+                <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1" />
+              </svg>
+              <svg v-else viewBox="0 0 10 10">
+                <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1" />
+                <path d="M2.5 2.5v-2h7v7h-2" fill="none" stroke="currentColor" stroke-width="1" />
+              </svg>
+            </button>
+            <button class="win-btn close" title="关闭" @click="winClose">
+              <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1" /></svg>
+            </button>
+          </div>
+        </div>
       </header>
 
       <div class="card">
@@ -731,7 +766,7 @@ onUnmounted(() => {
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  padding: 26px 16px 40px;
+  padding: 0 16px 24px;
   overflow-y: auto;
   user-select: none;
 }
@@ -766,13 +801,50 @@ onUnmounted(() => {
   margin: 0 auto;
 }
 
-/* 顶部品牌行 */
-.page-head {
+/* 自绘标题栏:通到窗口边缘,整行可拖拽 */
+.titlebar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 4px 14px;
+  height: 46px;
+  margin: 0 -16px; /* 抵消页面左右 padding */
+  padding-left: 16px;
 }
+.titlebar-right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.win-btns {
+  display: flex;
+  align-self: stretch;
+  height: 46px;
+}
+.win-btn {
+  width: 46px;
+  border: 0;
+  background: none;
+  color: var(--text-2);
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.win-btn svg {
+  width: 10px;
+  height: 10px;
+}
+.win-btn:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.win-btn.close:hover {
+  background: #e5484d;
+  color: #fff;
+}
+
+/* 顶部品牌行 */
 .brand {
   display: flex;
   align-items: center;
