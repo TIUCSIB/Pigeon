@@ -631,38 +631,85 @@ onUnmounted(() => {
         </div>
 
         <!-- ========== 文件 ========== -->
-        <div v-show="tab === 'files'" class="body">
-          <div class="drop" :class="{ over: dragging }" @click="browse">
-            <div class="dz-icon">
-              <svg viewBox="0 0 24 24">
-                <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z" />
-              </svg>
+        <div v-show="tab === 'files'" class="body files-body">
+          <div class="body-scroll">
+            <div class="drop" :class="{ over: dragging }" @click="browse">
+              <div class="dz-icon">
+                <svg viewBox="0 0 24 24">
+                  <path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z" />
+                </svg>
+              </div>
+              <p class="dz-t">{{ uploading ? '正在上传…' : '拖入文件或文件夹' }}</p>
+              <p class="dz-s">拖进窗口、点击选择,或 Ctrl+V 粘贴截图 · 文件夹会自动打包成 zip</p>
             </div>
-            <p class="dz-t">{{ uploading ? '正在上传…' : '拖入文件或文件夹' }}</p>
-            <p class="dz-s">拖进窗口、点击选择,或 Ctrl+V 粘贴截图 · 文件夹会自动打包成 zip</p>
-          </div>
 
-          <template v-if="files.length">
-            <div class="list-head">
-              <span class="sec">已共享</span>
-              <span class="sec-n">{{ files.length }}</span>
-              <button v-if="!selecting" class="link danger-link" @click="confirmKind = 'files-clear'">
-                清空
-              </button>
-              <button class="link" @click="toggleSelectMode">
-                {{ selecting ? '取消选择' : '选择' }}
-              </button>
-            </div>
-            <ul class="list">
-              <li v-for="f in files" :key="f.name">
-                <!-- 多选模式:行首勾选框,点行切换选中 -->
-                <button
-                  v-if="selecting"
-                  class="check"
-                  :class="{ on: selected.has(f.name) }"
-                  @click="toggleSelected(f.name)"
-                >
-                  <svg v-if="selected.has(f.name)" viewBox="0 0 24 24">
+            <template v-if="files.length">
+              <div class="list-head">
+                <span class="sec">已共享</span>
+                <span class="sec-n">{{ files.length }}</span>
+                <button v-if="!selecting" class="link danger-link" @click="confirmKind = 'files-clear'">
+                  清空
+                </button>
+                <button class="link" @click="toggleSelectMode">
+                  {{ selecting ? '取消选择' : '选择' }}
+                </button>
+              </div>
+              <ul class="list">
+                <li v-for="f in files" :key="f.name">
+                  <!-- 多选模式:行首勾选框,点行切换选中 -->
+                  <button
+                    v-if="selecting"
+                    class="check"
+                    :class="{ on: selected.has(f.name) }"
+                    @click="toggleSelected(f.name)"
+                  >
+                    <svg v-if="selected.has(f.name)" viewBox="0 0 24 24">
+                      <path
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2.5"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                        d="M20 6L9 17l-5-5"
+                      />
+                    </svg>
+                  </button>
+                  <button
+                    class="row-main"
+                    :class="{ dim: selecting }"
+                    :title="selecting ? '' : `在文件夹中显示 ${f.name}`"
+                    @click="selecting ? toggleSelected(f.name) : reveal(f.name)"
+                  >
+                    <span class="ext">{{ extOf(f.name) }}</span>
+                    <span class="row-text">
+                      <span class="row-name">{{ f.name }}</span>
+                      <span class="row-sub">{{ fmtSize(f.size) }} · {{ timeAgo(f.modified) }}</span>
+                    </span>
+                  </button>
+                  <span v-if="!selecting" class="row-ops">
+                    <button class="op" title="复制下载链接" @click="copyFileUrl(f.name)">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 0-10z"
+                        />
+                      </svg>
+                    </button>
+                    <button class="op danger" title="删除" @click="deleteTarget = f.name; confirmKind = 'file'">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                        />
+                      </svg>
+                    </button>
+                  </span>
+                </li>
+              </ul>
+              <!-- 多选模式下的全选行 -->
+              <div v-if="selecting" class="select-all-row">
+                <button class="check" :class="{ on: allSelected }" @click="toggleSelectAll">
+                  <svg v-if="allSelected" viewBox="0 0 24 24">
                     <path
                       fill="none"
                       stroke="currentColor"
@@ -673,69 +720,24 @@ onUnmounted(() => {
                     />
                   </svg>
                 </button>
-                <button
-                  class="row-main"
-                  :class="{ dim: selecting }"
-                  :title="selecting ? '' : `在文件夹中显示 ${f.name}`"
-                  @click="selecting ? toggleSelected(f.name) : reveal(f.name)"
-                >
-                  <span class="ext">{{ extOf(f.name) }}</span>
-                  <span class="row-text">
-                    <span class="row-name">{{ f.name }}</span>
-                    <span class="row-sub">{{ fmtSize(f.size) }} · {{ timeAgo(f.modified) }}</span>
-                  </span>
-                </button>
-                <span v-if="!selecting" class="row-ops">
-                  <button class="op" title="复制下载链接" @click="copyFileUrl(f.name)">
-                    <svg viewBox="0 0 24 24">
-                      <path
-                        fill="currentColor"
-                        d="M3.9 12c0-1.71 1.39-3.1 3.1-3.1h4V7H7a5 5 0 0 0 0 10h4v-1.9H7c-1.71 0-3.1-1.39-3.1-3.1zM8 13h8v-2H8v2zm9-6h-4v1.9h4c1.71 0 3.1 1.39 3.1 3.1s-1.39 3.1-3.1 3.1h-4V17h4a5 5 0 0 0 0-10z"
-                      />
-                    </svg>
-                  </button>
-                  <button class="op danger" title="删除" @click="deleteTarget = f.name; confirmKind = 'file'">
-                    <svg viewBox="0 0 24 24">
-                      <path
-                        fill="currentColor"
-                        d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
-                      />
-                    </svg>
-                  </button>
-                </span>
-              </li>
-            </ul>
-            <!-- 多选模式下的全选行 -->
-            <div v-if="selecting" class="select-all-row">
-              <button class="check" :class="{ on: allSelected }" @click="toggleSelectAll">
-                <svg v-if="allSelected" viewBox="0 0 24 24">
-                  <path
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2.5"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                    d="M20 6L9 17l-5-5"
-                  />
-                </svg>
-              </button>
-              <span class="sa-t">全选</span>
-            </div>
-            <!-- 批量操作浮条 -->
-            <div v-if="selecting" class="batch-bar">
-              <span class="batch-n">已选 {{ selected.size }} 项</span>
-              <button
-                class="btn primary danger"
-                :disabled="selected.size === 0"
-                @click="confirmKind = 'files-batch'"
-              >
-                删除选中
-              </button>
-            </div>
-          </template>
-          <p v-else class="empty">还没有文件,拖一个进来试试</p>
+                <span class="sa-t">全选</span>
+              </div>
+            </template>
+            <p v-else class="empty">还没有文件,拖一个进来试试</p>
+          </div>
 
-          <div class="foot-bar">
+          <!-- 固定底栏:多选时显示批量操作,否则显示路径 -->
+          <div v-if="selecting" class="dock-bar">
+            <span class="batch-n">已选 {{ selected.size }} 项</span>
+            <button
+              class="btn primary danger"
+              :disabled="selected.size === 0"
+              @click="confirmKind = 'files-batch'"
+            >
+              删除选中
+            </button>
+          </div>
+          <div v-else class="dock-bar foot-bar">
             <span class="path" :title="info?.inbox_dir">{{ info?.inbox_dir }}</span>
             <button class="link" @click="openFolder">打开文件夹</button>
           </div>
@@ -1148,6 +1150,29 @@ html::-webkit-scrollbar-corner {
   overflow-y: auto;
 }
 
+/* 文件页:内部滚动区 + 固定底栏(批量操作/路径),底栏不参与滚动 */
+.files-body {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+.body-scroll {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 22px 22px 12px;
+}
+.dock-bar {
+  flex: none;
+  padding: 12px 22px;
+  border-top: 1px solid var(--border-soft);
+  background: var(--card);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 /* ========== 通用元素 ========== */
 .hr {
   height: 1px;
@@ -1505,25 +1530,12 @@ li:has(.check.on) .row-main {
   color: var(--text-3);
 }
 
-/* 批量操作浮条 */
-.batch-bar {
-  position: sticky;
-  bottom: 0;
-  margin: 12px -22px -22px;
-  padding: 10px 22px;
-  background: var(--card);
-  border-top: 1px solid var(--border-soft);
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-}
 .batch-n {
   font-size: 13px;
   font-weight: 600;
   color: var(--text);
 }
-.batch-bar .btn.primary.danger:disabled {
+.dock-bar .btn.primary.danger:disabled {
   background: var(--accent-bg);
   color: var(--text-4);
 }
@@ -1637,9 +1649,6 @@ li:has(.check.on) .row-main {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-top: 14px;
-  padding-top: 12px;
-  border-top: 1px solid var(--border-row);
 }
 .path {
   font-size: 11px;
