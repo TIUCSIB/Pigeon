@@ -14,11 +14,13 @@
       {
         "label": "main",
         "title": "Pigeon",
-        "width": 430,
-        "height": 700,
-        "minWidth": 360,
-        "minHeight": 540,
+        "width": 720,
+        "height": 760,
+        "minWidth": 480,
+        "minHeight": 600,
         "center": true,
+        "resizable": true,
+        "maximizable": false,
         "decorations": false,
         "dragDropEnabled": false
       }

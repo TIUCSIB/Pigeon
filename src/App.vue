@@ -56,16 +56,11 @@ const savingSettings = ref(false)
 const settingsLoaded = ref(false)
 // 暗黑模式(即时生效并持久化)
 const darkMode = ref(false)
-// 自绘标题栏
-const maximized = ref(false)
+// 自绘标题栏(固定小卡片窗口,无最大化)
 const appWindow = getCurrentWindow()
 
 async function winMinimize() {
   await appWindow.minimize()
-}
-async function winToggleMax() {
-  await appWindow.toggleMaximize()
-  maximized.value = await appWindow.isMaximized()
 }
 async function winClose() {
   await appWindow.close()
@@ -470,15 +465,6 @@ onUnmounted(() => {
           <div class="win-btns">
             <button class="win-btn" title="最小化" @click="winMinimize">
               <svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1" /></svg>
-            </button>
-            <button class="win-btn" :title="maximized ? '还原' : '最大化'" @click="winToggleMax">
-              <svg v-if="!maximized" viewBox="0 0 10 10">
-                <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1" />
-              </svg>
-              <svg v-else viewBox="0 0 10 10">
-                <rect x="0.5" y="2.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1" />
-                <path d="M2.5 2.5v-2h7v7h-2" fill="none" stroke="currentColor" stroke-width="1" />
-              </svg>
             </button>
             <button class="win-btn close" title="关闭" @click="winClose">
               <svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10" stroke="currentColor" stroke-width="1" /></svg>
