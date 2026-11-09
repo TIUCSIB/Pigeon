@@ -103,7 +103,6 @@ const uploadUrl = ref('')
 // 设置
 const settingsPort = ref('')
 const settingsDir = ref('')
-const savingSettings = ref(false)
 const settingsLoaded = ref(false)
 // 暗黑模式(即时生效并持久化)
 const darkMode = ref(false)
@@ -456,20 +455,29 @@ async function loadSettings() {
 async function chooseDir() {
   try {
     const picked = await invoke<string | null>('pick_inbox_dir')
-    if (picked) settingsDir.value = picked
+    if (picked) {
+      settingsDir.value = picked
+      // 即改即存
+      await persistSettings()
+    }
   } catch (e) {
     toast(`${e}`)
   }
 }
 
-async function saveSettings() {
-  if (savingSettings.value) return
+// 即改即存:端口/目录任一变化后 600ms 防抖保存
+let saveTimer: ReturnType<typeof setTimeout> | undefined
+
+function onSettingInput() {
+  clearTimeout(saveTimer)
+  saveTimer = setTimeout(persistSettings, 600)
+}
+
+async function persistSettings() {
   const port = settingsPort.value.trim()
   if (port && (!/^\d+$/.test(port) || Number(port) > 65535)) {
-    toast('端口需为 1–65535,留空则自动')
-    return
+    return // 无效输入不保存,提示由校验分支给
   }
-  savingSettings.value = true
   try {
     await invoke('save_settings', {
       port: port ? Number(port) : 0,
@@ -479,8 +487,6 @@ async function saveSettings() {
     await Promise.all([refreshFiles(), refreshClips()])
   } catch (e) {
     toast(`${e}`)
-  } finally {
-    savingSettings.value = false
   }
 }
 
@@ -819,6 +825,7 @@ onUnmounted(() => {
               class="input"
               placeholder="留空自动分配(默认 8420)"
               inputmode="numeric"
+              @input="onSettingInput"
             />
             <p class="sub">改动端口需重启应用生效;端口被占用时自动回落随机端口</p>
           </div>
@@ -832,20 +839,8 @@ onUnmounted(() => {
             <p class="sub">修改后立即生效,已分享的文件留在原目录</p>
           </div>
 
-          <div class="hr"></div>
-
-          <div class="actions">
-            <button
-              class="btn primary"
-              :disabled="savingSettings || !settingsLoaded"
-              @click="saveSettings"
-            >
-              {{ savingSettings ? '保存中…' : '保存设置' }}
-            </button>
-          </div>
-
           <p class="sub note">
-            设置保存在 <code>~/Pigeon/settings.json</code> · token 每次启动随机生成
+            所有设置即改即存,保存在 <code>~/Pigeon/settings.json</code> · token 每次启动随机生成
           </p>
         </div>
       </div>

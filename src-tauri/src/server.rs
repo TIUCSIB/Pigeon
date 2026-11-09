@@ -743,33 +743,53 @@ const MOBILE_HTML: &str = r##"<!doctype html>
     <span class="logo"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="#fff" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg></span>
     <div><h1>Pigeon</h1><p id="host"></p></div>
   </div>
+  <nav class="tabs">
+    <button class="tab on" data-tab="upload">发送</button>
+    <button class="tab" data-tab="files">文件 <span id="tab-file-n"></span></button>
+    <button class="tab" data-tab="clips">记录</button>
+  </nav>
 </header>
 <main>
-  <button id="pick" class="pick">
-    <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z"/></svg>
-    <span>选择文件 / 拍照上传</span>
-    <span class="hint">发送到电脑</span>
-  </button>
-  <input type="file" id="input" multiple>
-  <section class="text-card">
-    <h2>发送文字</h2>
-    <textarea id="text-in" placeholder="输入或粘贴文字,发送到电脑剪贴板" rows="3"></textarea>
-    <button id="send-text" class="send-btn" disabled>发送</button>
-  </section>
-  <section id="progress-section" class="hidden">
-    <h2>正在发送</h2>
-    <ul id="queue"></ul>
-  </section>
-  <section id="clips-section" class="hidden">
-    <h2>文字记录</h2>
-    <ul id="clips"></ul>
-  </section>
-  <section id="files-section">
-    <h2>来自电脑的文件 <span id="count"></span></h2>
-    <ul id="files"></ul>
-    <p id="empty" class="hidden">电脑还没有分享文件</p>
-  </section>
+  <!-- 发送 Tab -->
+  <div class="pane on" id="pane-upload">
+    <button id="pick" class="pick">
+      <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z"/></svg>
+      <span>选择文件 / 拍照上传</span>
+      <span class="hint">发送到电脑</span>
+    </button>
+    <input type="file" id="input" multiple>
+    <section class="text-card">
+      <h2>发送文字</h2>
+      <textarea id="text-in" placeholder="输入或粘贴文字,发送到电脑剪贴板" rows="3"></textarea>
+      <button id="send-text" class="send-btn" disabled>发送</button>
+    </section>
+    <section id="progress-section" class="hidden">
+      <h2>正在发送</h2>
+      <ul id="queue"></ul>
+    </section>
+  </div>
+  <!-- 文件 Tab -->
+  <div class="pane" id="pane-files">
+    <div class="search-row">
+      <input id="file-search" type="search" placeholder="搜索文件名…" autocomplete="off">
+    </div>
+    <section>
+      <h2>来自电脑的文件 <span id="count"></span></h2>
+      <ul id="files"></ul>
+      <p id="empty" class="hidden">电脑还没有分享文件</p>
+      <p id="no-match" class="hidden">没有匹配的文件</p>
+    </section>
+  </div>
+  <!-- 记录 Tab -->
+  <div class="pane" id="pane-clips">
+    <section id="clips-section" class="hidden">
+      <h2>文字记录</h2>
+      <ul id="clips"></ul>
+    </section>
+    <p id="clips-empty" class="hidden panel-empty">还没有文字记录</p>
+  </div>
 </main>
+<button id="to-top" class="hidden" aria-label="回到顶部">↑</button>
 <div id="toast" class="hidden"></div>
 <script src="app.js"></script>
 </body>
@@ -785,8 +805,9 @@ body {
 }
 header {
   background: linear-gradient(135deg, #4a7cff, #3b5fe0);
-  color: #fff; padding: 22px 20px 26px;
+  color: #fff; padding: 22px 20px 0;
   border-radius: 0 0 22px 22px;
+  position: sticky; top: 0; z-index: 10;
 }
 .brand { display: flex; align-items: center; gap: 12px; }
 .logo {
@@ -795,6 +816,42 @@ header {
 }
 h1 { font-size: 19px; }
 #host { font-size: 12px; opacity: .85; font-family: ui-monospace, Consolas, monospace; }
+
+/* Tab 导航(吸顶) */
+.tabs { display: flex; gap: 6px; margin-top: 14px; }
+.tab {
+  flex: 1; border: 0; background: none; color: rgba(255,255,255,.75);
+  font-size: 14px; font-weight: 600; font-family: inherit;
+  padding: 10px 0 12px; cursor: pointer;
+  border-bottom: 2.5px solid transparent;
+}
+.tab.on { color: #fff; border-bottom-color: #fff; }
+.tab span { font-size: 11px; font-weight: 400; opacity: .8; }
+
+/* 分区面板:只显示当前 Tab */
+.pane { display: none; }
+.pane.on { display: block; }
+
+/* 搜索框 */
+.search-row { margin-bottom: 14px; }
+#file-search {
+  width: 100%; height: 42px; border: 1.5px solid #e3e8f2; border-radius: 12px;
+  padding: 0 14px; font-size: 14px; font-family: inherit;
+  background: #fff; box-sizing: border-box;
+  -webkit-appearance: none; appearance: none;
+}
+#file-search:focus { outline: none; border-color: #3b6ef3; }
+#no-match { text-align: center; color: #8a93a8; font-size: 13px; padding: 14px 0; }
+.panel-empty { text-align: center; color: #8a93a8; font-size: 13px; padding: 40px 0; }
+
+/* 回到顶部 */
+#to-top {
+  position: fixed; right: 16px; bottom: 24px; z-index: 20;
+  width: 42px; height: 42px; border-radius: 50%; border: 0;
+  background: #3b6ef3; color: #fff; font-size: 18px; font-weight: 700;
+  cursor: pointer; box-shadow: 0 4px 14px rgba(59,110,243,.35);
+}
+#to-top:active { transform: scale(.94); }
 main { padding: 18px 16px; display: flex; flex-direction: column; gap: 16px; }
 .pick {
   width: 100%; border: 1px solid #e6e9ef; border-radius: 16px; padding: 22px 16px;
@@ -899,10 +956,23 @@ const MOBILE_JS: &str = r##"(function () {
 
   // ---- 文件列表 ----
   function isImage(name) { return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name); }
+  // 全量文件缓存,搜索框在本地过滤
+  var allFiles = [];
   function renderFiles(list) {
+    allFiles = list;
+    applyFilter();
+    // Tab 徽标
+    $('tab-file-n').textContent = list.length ? '(' + list.length + ')' : '';
+  }
+  function applyFilter() {
+    var q = ($('file-search').value || '').trim().toLowerCase();
+    var list = q
+      ? allFiles.filter(function (f) { return f.name.toLowerCase().indexOf(q) >= 0; })
+      : allFiles;
     var ul = $('files');
     $('count').textContent = list.length ? '(' + list.length + ')' : '';
-    $('empty').classList.toggle('hidden', list.length > 0);
+    $('empty').classList.toggle('hidden', allFiles.length > 0);
+    $('no-match').classList.toggle('hidden', !(allFiles.length > 0 && list.length === 0));
     ul.innerHTML = '';
     list.forEach(function (f) {
       var li = document.createElement('li');
@@ -1092,6 +1162,33 @@ const MOBILE_JS: &str = r##"(function () {
     fd.append('file', it.file, it.file.name);
     xhr.send(fd);
   }
+
+  // ---- Tab 切换 ----
+  var tabs = document.querySelectorAll('.tab');
+  Array.prototype.forEach.call(tabs, function (btn) {
+    btn.addEventListener('click', function () {
+      Array.prototype.forEach.call(tabs, function (b) { b.classList.remove('on'); });
+      btn.classList.add('on');
+      document.querySelectorAll('.pane').forEach(function (p) { p.classList.remove('on'); });
+      var pane = $('pane-' + btn.getAttribute('data-tab'));
+      if (pane) pane.classList.add('on');
+      window.scrollTo(0, 0);
+    });
+  });
+
+  // ---- 文件搜索(本地过滤) ----
+  $('file-search').addEventListener('input', applyFilter);
+
+  // ---- 回到顶部 ----
+  var toTop = $('to-top');
+  window.addEventListener('scroll', function () {
+    toTop.classList.toggle('hidden', window.scrollY < 400);
+  });
+  toTop.addEventListener('click', function () {
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  });
+
+  // 发送完成自动跳到文件 Tab 便于确认?不必,保留在原页
 
   loadFiles();
   loadClips();
