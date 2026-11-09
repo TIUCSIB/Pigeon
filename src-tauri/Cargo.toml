@@ -1,0 +1,29 @@
+[package]
+name = "pigeon"
+version = "0.1.0"
+description = "Pigeon - LAN file sharing"
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-dialog = "2"
+tauri-plugin-clipboard-manager = "2"
+axum = { version = "0.8", features = ["multipart"] }
+tokio = { version = "1", features = ["full"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
+tokio-util = { version = "0.7", features = ["io"] }
+rand = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+mime_guess = "2"
+percent-encoding = "2"
+base64 = "0.22"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+tower-http = { version = "0.6", features = ["cors"] }
+
+[profile.release]
+strip = true
+lto = true
