@@ -11,6 +11,9 @@ pub struct Settings {
     pub port: u16,
     /// 共享收件目录
     pub inbox_dir: Option<String>,
+    /// 暗黑模式
+    #[serde(default)]
+    pub dark_mode: bool,
 }
 
 impl Default for Settings {
@@ -18,6 +21,7 @@ impl Default for Settings {
         Self {
             port: 8420,
             inbox_dir: None,
+            dark_mode: false,
         }
     }
 }

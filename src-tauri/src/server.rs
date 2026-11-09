@@ -550,10 +550,15 @@ pub async fn save_settings(
     state: tauri::State<'_, crate::AppServer>,
     port: u16,
     inbox_dir: Option<String>,
+    dark_mode: Option<bool>,
 ) -> Result<(), String> {
     // 目录为空字符串时回落默认值
     let inbox_dir = inbox_dir.filter(|s| !s.trim().is_empty());
-    let settings = crate::settings::Settings { port, inbox_dir };
+    let settings = crate::settings::Settings {
+        port,
+        inbox_dir,
+        dark_mode: dark_mode.unwrap_or(false),
+    };
     settings.save()?;
 
     // 目录立即切换;目录不存在则自动创建
@@ -566,6 +571,27 @@ pub async fn save_settings(
             state.shared.files.set_dir(path);
         }
     }
+    Ok(())
+}
+
+/// 切换窗口原生主题(标题栏等跟随),并即时持久化
+#[tauri::command]
+pub fn set_theme(
+    app: AppHandle,
+    dark: bool,
+) -> Result<(), String> {
+    use tauri::{Manager, Theme};
+    let window = app
+        .get_webview_window("main")
+        .ok_or("主窗口不存在")?;
+    window
+        .set_theme(Some(if dark { Theme::Dark } else { Theme::Light }))
+        .map_err(|e| e.to_string())?;
+
+    // 主题是即时生效项,直接更新持久化文件里的 dark_mode
+    let mut settings = crate::settings::Settings::load();
+    settings.dark_mode = dark;
+    settings.save()?;
     Ok(())
 }
 

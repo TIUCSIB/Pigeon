@@ -33,6 +33,7 @@ fn main() {
             server::get_settings,
             server::save_settings,
             server::pick_inbox_dir,
+            server::set_theme,
         ])
         .setup(|app| {
             // 1. 用户设置(端口、共享目录)
@@ -69,6 +70,14 @@ fn main() {
             // 把连接地址落到文件里,方便排查和找回(内容含 token,仅本机使用)
             let _ = std::fs::write(pigeon_dir.join("server-url.txt"), shared.url());
             app.manage(AppServer { shared: shared.clone() });
+
+            // 恢复上次保存的窗口主题
+            if settings.dark_mode {
+                use tauri::Theme;
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.set_theme(Some(Theme::Dark));
+                }
+            }
 
             // 5. 后台跑 HTTP 服务(from_std 需要 Tokio 运行时,必须在 spawn 的 async 块里做)
             let handle2 = app.handle().clone();

@@ -53,6 +53,8 @@ const settingsPort = ref('')
 const settingsDir = ref('')
 const savingSettings = ref(false)
 const settingsLoaded = ref(false)
+// 暗黑模式(即时生效并持久化)
+const darkMode = ref(false)
 
 let toastSeq = 0
 const unlisteners: UnlistenFn[] = []
@@ -321,11 +323,28 @@ async function onDrop(e: DragEvent) {
   }
 }
 
+function applyTheme(dark: boolean) {
+  darkMode.value = dark
+  document.documentElement.classList.toggle('dark', dark)
+}
+
+async function toggleDark() {
+  const next = !darkMode.value
+  applyTheme(next)
+  try {
+    // 同时切窗口原生主题(标题栏跟随)并持久化
+    await invoke('set_theme', { dark: next })
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
 async function loadSettings() {
   try {
     const s = await invoke<Settings>('get_settings')
     settingsPort.value = s.port === 0 ? '' : String(s.port)
     settingsDir.value = s.inbox_dir ?? ''
+    applyTheme(s.dark_mode)
     settingsLoaded.value = true
   } catch (e) {
     toast(`${e}`)
@@ -579,6 +598,38 @@ onUnmounted(() => {
 
         <!-- ========== 设置 ========== -->
         <div v-show="tab === 'settings'" class="body">
+          <div class="opt-row">
+            <span class="opt-icon" :class="{ dark: darkMode }">
+              <svg v-if="!darkMode" viewBox="0 0 24 24">
+                <path
+                  fill="currentColor"
+                  d="M12 7a5 5 0 1 0 0 10 5 5 0 0 0 0-10zM2 13h2a1 1 0 1 0 0-2H2a1 1 0 1 0 0 2zm18 0h2a1 1 0 1 0 0-2h-2a1 1 0 1 0 0 2zM11 2v2a1 1 0 1 0 2 0V2a1 1 0 1 0-2 0zm0 18v2a1 1 0 1 0 2 0v-2a1 1 0 1 0-2 0zM4.22 5.64l1.42 1.42a1 1 0 1 0 1.41-1.41L5.64 4.22a1 1 0 1 0-1.42 1.42zm12.72 12.73 1.42 1.42a1 1 0 1 0 1.42-1.42l-1.42-1.41a1 1 0 1 0-1.41 1.41zM5.64 19.78l1.41-1.42a1 1 0 1 0-1.41-1.41l-1.42 1.41a1 1 0 1 0 1.42 1.42zM18.36 5.64l1.42-1.42a1 1 0 1 0-1.42-1.42l-1.41 1.42a1 1 0 1 0 1.41 1.42z"
+                />
+              </svg>
+              <svg v-else viewBox="0 0 24 24">
+                <path
+                  fill="currentColor"
+                  d="M12.3 4.9c.4-.2.6-.7.5-1.1s-.6-.8-1-.8C6.8 3.1 3 7.1 3 12c0 5 4 9 9 9 4.9 0 8.9-3.8 9-8.8 0-.4-.3-.9-.8-1s-.9.1-1.1.5c-.9 1.3-2.4 2.3-4.1 2.3-2.8 0-5-2.2-5-5 0-1.7.9-3.2 2.3-4.1z"
+                />
+              </svg>
+            </span>
+            <span class="opt-text">
+              <span class="opt-t">暗黑模式</span>
+              <span class="opt-s">立即生效,重启后保持</span>
+            </span>
+            <button
+              class="switch"
+              :class="{ on: darkMode }"
+              role="switch"
+              :aria-checked="darkMode"
+              @click="toggleDark"
+            >
+              <i class="knob"></i>
+            </button>
+          </div>
+
+          <div class="hr"></div>
+
           <div class="field">
             <label>监听端口</label>
             <input
@@ -650,13 +701,64 @@ onUnmounted(() => {
 <style scoped>
 /* ========== 基础 ========== */
 .page {
+  /* 亮色主题变量(暗色覆盖见 .dark) */
+  --bg: #f1f2f4;
+  --card: #fff;
+  --border: #e6e9ef;
+  --border-soft: #eef0f3;
+  --border-row: #f1f3f6;
+  --text: #1a1d24;
+  --text-2: #5b6478;
+  --text-3: #8a93a8;
+  --text-4: #a8b0c0;
+  --text-mono: #4a5468;
+  --hover: #fafbfd;
+  --field-bg: #f7f8fa;
+  --chip-bg: #f2f4f7;
+  --chip-n: #f2f4f7;
+  --accent: #1c6fd8;
+  --accent-hover: #1a63c0;
+  --accent-bg: #eef4ff;
+  --accent-btn-hover: #f7f8fa;
+  --danger: #e5484d;
+  --danger-bg: #fdeeee;
+  --ok: #22a06b;
+  --mask: rgba(26, 29, 36, 0.38);
+  --toast-bg: #1a1d24;
+  --drag-tint: rgba(28, 111, 216, 0.07);
   min-height: 100vh;
-  background: #f1f2f4;
-  color: #1a1d24;
+  background: var(--bg);
+  color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   padding: 26px 16px 40px;
   overflow-y: auto;
   user-select: none;
+}
+.page.dark {
+  --bg: #14161a;
+  --card: #1c1f24;
+  --border: #2e323a;
+  --border-soft: #262a31;
+  --border-row: #262a31;
+  --text: #e8eaee;
+  --text-2: #9aa3b5;
+  --text-3: #737d92;
+  --text-4: #5b6478;
+  --text-mono: #a8b0c0;
+  --hover: #22262d;
+  --field-bg: #22262d;
+  --chip-bg: #22262d;
+  --chip-n: #22262d;
+  --accent: #4d8ff0;
+  --accent-hover: #67a2f3;
+  --accent-bg: #1d2a3d;
+  --accent-btn-hover: #22262d;
+  --danger: #ef6b6f;
+  --danger-bg: #3a2224;
+  --ok: #35c287;
+  --mask: rgba(0, 0, 0, 0.55);
+  --toast-bg: #2e323a;
+  --drag-tint: rgba(77, 143, 240, 0.09);
 }
 .shell {
   max-width: 640px;
@@ -693,10 +795,11 @@ onUnmounted(() => {
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.2px;
+  color: var(--text);
 }
 .status {
   font-size: 12px;
-  color: #5b6478;
+  color: var(--text-2);
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -706,13 +809,13 @@ onUnmounted(() => {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: #22a06b;
+  background: var(--ok);
 }
 
 /* 卡片 */
 .card {
-  background: #fff;
-  border: 1px solid #e6e9ef;
+  background: var(--card);
+  border: 1px solid var(--border);
   border-radius: 16px;
   overflow: hidden;
 }
@@ -722,7 +825,7 @@ onUnmounted(() => {
   display: flex;
   gap: 26px;
   padding: 16px 22px 0;
-  border-bottom: 1px solid #eef0f3;
+  border-bottom: 1px solid var(--border-soft);
 }
 .tabs button {
   position: relative;
@@ -730,7 +833,7 @@ onUnmounted(() => {
   background: none;
   padding: 0 0 13px;
   font-size: 14px;
-  color: #8a93a8;
+  color: var(--text-3);
   cursor: pointer;
   font-family: inherit;
   transition: color 0.15s;
@@ -739,10 +842,10 @@ onUnmounted(() => {
   gap: 6px;
 }
 .tabs button:hover {
-  color: #3b4557;
+  color: var(--text-2);
 }
 .tabs button.on {
-  color: #1a1d24;
+  color: var(--text);
   font-weight: 600;
 }
 .tabs button.on::after {
@@ -753,13 +856,13 @@ onUnmounted(() => {
   bottom: -1px;
   height: 2px;
   border-radius: 2px 2px 0 0;
-  background: #1c6fd8;
+  background: var(--accent);
 }
 .tab-n {
   font-size: 11px;
   font-weight: 500;
-  color: #8a93a8;
-  background: #f2f4f7;
+  color: var(--text-3);
+  background: var(--chip-n);
   border-radius: 999px;
   padding: 1px 7px;
   line-height: 1.6;
@@ -772,7 +875,7 @@ onUnmounted(() => {
 /* ========== 通用元素 ========== */
 .hr {
   height: 1px;
-  background: #eef0f3;
+  background: var(--border-soft);
   margin: 20px 0;
 }
 
@@ -784,17 +887,18 @@ onUnmounted(() => {
   display: block;
   font-size: 13px;
   font-weight: 600;
-  color: #1a1d24;
+  color: var(--text);
   margin-bottom: 8px;
 }
 .cap {
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 8px;
+  color: var(--text);
 }
 .sub {
   font-size: 12px;
-  color: #8a93a8;
+  color: var(--text-3);
   line-height: 1.6;
   margin-top: 7px;
 }
@@ -802,13 +906,13 @@ onUnmounted(() => {
 .input {
   width: 100%;
   height: 40px;
-  border: 1px solid #e6e9ef;
-  background: #f7f8fa;
+  border: 1px solid var(--border);
+  background: var(--field-bg);
   border-radius: 9px;
   padding: 0 12px;
   font-size: 13px;
   font-family: inherit;
-  color: #1a1d24;
+  color: var(--text);
   box-sizing: border-box;
   user-select: text;
   transition:
@@ -816,12 +920,12 @@ onUnmounted(() => {
     background 0.15s;
 }
 .input::placeholder {
-  color: #a8b0c0;
+  color: var(--text-4);
 }
 .input:focus {
   outline: none;
-  border-color: #1c6fd8;
-  background: #fff;
+  border-color: var(--accent);
+  background: var(--card);
 }
 .input.readonly,
 .input[readonly] {
@@ -834,12 +938,12 @@ onUnmounted(() => {
   width: 15px;
   height: 15px;
   flex: none;
-  color: #9aa3b5;
+  color: var(--text-4);
 }
 .url {
   font-family: ui-monospace, Consolas, monospace;
   font-size: 12px;
-  color: #4a5468;
+  color: var(--text-mono);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -858,10 +962,10 @@ onUnmounted(() => {
 .sq-btn {
   flex: none;
   width: 40px;
-  border: 1px solid #e6e9ef;
-  background: #fff;
+  border: 1px solid var(--border);
+  background: var(--card);
   border-radius: 9px;
-  color: #5b6478;
+  color: var(--text-2);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -878,9 +982,9 @@ onUnmounted(() => {
   height: 15px;
 }
 .sq-btn:hover:not(:disabled) {
-  border-color: #cfd6e2;
-  background: #f7f8fa;
-  color: #1a1d24;
+  border-color: var(--border);
+  background: var(--accent-btn-hover);
+  color: var(--text);
 }
 .sq-btn:active:not(:disabled) {
   transform: translateY(1px);
@@ -892,7 +996,7 @@ onUnmounted(() => {
   font-weight: 500;
 }
 .sq-btn:disabled {
-  color: #b6bdcc;
+  color: var(--text-4);
   cursor: default;
 }
 
@@ -906,29 +1010,30 @@ onUnmounted(() => {
   cursor: pointer;
 }
 .btn.primary {
-  background: #1c6fd8;
+  background: var(--accent);
   color: #fff;
   font-weight: 500;
 }
 .btn.primary:hover:not(:disabled) {
-  background: #1a63c0;
+  background: var(--accent-hover);
 }
 .btn.primary:disabled {
-  background: #b9cdf0;
+  background: var(--accent-bg);
   cursor: default;
 }
 .btn.ghost {
-  background: #f2f4f7;
-  color: #3b4557;
+  background: var(--chip-bg);
+  color: var(--text-2);
 }
 .btn.ghost:hover {
-  background: #e9ecf1;
+  background: var(--hover);
 }
 .btn.primary.danger {
-  background: #e5484d;
+  background: var(--danger);
 }
 .btn.primary.danger:hover {
-  background: #d03a3f;
+  background: var(--danger);
+  opacity: 0.9;
 }
 .btn:active:not(:disabled) {
   transform: translateY(1px);
@@ -938,7 +1043,7 @@ onUnmounted(() => {
   border: 0;
   background: none;
   padding: 0;
-  color: #1c6fd8;
+  color: var(--accent);
   font-size: 12px;
   font-family: inherit;
   cursor: pointer;
@@ -957,11 +1062,12 @@ onUnmounted(() => {
   width: 148px;
   height: 148px;
   border-radius: 10px;
-  border: 1px solid #eef0f3;
+  border: 1px solid var(--border-soft);
+  background: #fff;
   flex: none;
 }
 .qr-loading {
-  background: linear-gradient(100deg, #f0f2f6 40%, #fafbfd 50%, #f0f2f6 60%);
+  background: linear-gradient(100deg, var(--field-bg) 40%, var(--hover) 50%, var(--field-bg) 60%);
   background-size: 200% 100%;
   animation: shimmer 1.2s infinite;
 }
@@ -977,7 +1083,7 @@ onUnmounted(() => {
 
 /* ========== 拖放区 ========== */
 .drop {
-  border: 1.5px dashed #d4dae4;
+  border: 1.5px dashed var(--border);
   border-radius: 12px;
   padding: 22px 16px;
   text-align: center;
@@ -989,15 +1095,15 @@ onUnmounted(() => {
 }
 .drop:hover,
 .drop.over {
-  border-color: #1c6fd8;
-  background: #f6f9ff;
+  border-color: var(--accent);
+  background: var(--accent-bg);
 }
 .dz-icon {
   width: 38px;
   height: 38px;
   margin: 0 auto 9px;
   border-radius: 50%;
-  background: #eef4ff;
+  background: var(--accent-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1005,15 +1111,16 @@ onUnmounted(() => {
 .dz-icon svg {
   width: 19px;
   height: 19px;
-  fill: #1c6fd8;
+  fill: var(--accent);
 }
 .dz-t {
   font-size: 13.5px;
   font-weight: 600;
+  color: var(--text);
 }
 .dz-s {
   font-size: 12px;
-  color: #8a93a8;
+  color: var(--text-3);
   margin-top: 4px;
 }
 
@@ -1029,7 +1136,7 @@ onUnmounted(() => {
 }
 .sec-n {
   font-size: 12px;
-  color: #a2aab9;
+  color: var(--text-4);
 }
 .list {
   list-style: none;
@@ -1040,7 +1147,7 @@ onUnmounted(() => {
   display: flex;
   align-items: center;
   gap: 4px;
-  border-bottom: 1px solid #f1f3f6;
+  border-bottom: 1px solid var(--border-row);
 }
 .list li:last-child {
   border-bottom: 0;
@@ -1061,15 +1168,15 @@ onUnmounted(() => {
   color: inherit;
 }
 .row-main:hover {
-  background: #fafbfd;
+  background: var(--hover);
 }
 .ext {
   flex: none;
   width: 36px;
   height: 36px;
   border-radius: 9px;
-  background: #f2f4f8;
-  color: #5b6478;
+  background: var(--chip-bg);
+  color: var(--text-2);
   font-size: 9px;
   font-weight: 700;
   text-transform: uppercase;
@@ -1087,14 +1194,14 @@ onUnmounted(() => {
 }
 .row-name {
   font-size: 13px;
-  color: #1a1d24;
+  color: var(--text);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .row-sub {
   font-size: 11.5px;
-  color: #8a93a8;
+  color: var(--text-3);
 }
 .row-ops {
   flex: none;
@@ -1113,7 +1220,7 @@ onUnmounted(() => {
   width: 28px;
   height: 28px;
   border-radius: 7px;
-  color: #9aa3b5;
+  color: var(--text-3);
   cursor: pointer;
   display: inline-flex;
   align-items: center;
@@ -1124,12 +1231,12 @@ onUnmounted(() => {
   height: 14px;
 }
 .op:hover {
-  background: #eef4ff;
-  color: #1c6fd8;
+  background: var(--accent-bg);
+  color: var(--accent);
 }
 .op.danger:hover {
-  background: #fdeeee;
-  color: #e5484d;
+  background: var(--danger-bg);
+  color: var(--danger);
 }
 
 .clip-row {
@@ -1139,7 +1246,7 @@ onUnmounted(() => {
 .clip-text {
   font-size: 13px;
   line-height: 1.55;
-  color: #1a1d24;
+  color: var(--text);
   white-space: pre-wrap;
   word-break: break-word;
   max-height: 3.3em;
@@ -1150,8 +1257,8 @@ onUnmounted(() => {
   flex: none;
   align-self: center;
   font-size: 11.5px;
-  color: #1c6fd8;
-  background: #eef4ff;
+  color: var(--accent);
+  background: var(--accent-bg);
   border-radius: 7px;
   padding: 5px 11px;
   opacity: 0;
@@ -1163,7 +1270,7 @@ onUnmounted(() => {
 
 .empty {
   text-align: center;
-  color: #a2aab9;
+  color: var(--text-4);
   font-size: 13px;
   padding: 26px 0 18px;
 }
@@ -1175,12 +1282,12 @@ onUnmounted(() => {
   gap: 12px;
   margin-top: 14px;
   padding-top: 12px;
-  border-top: 1px solid #f1f3f6;
+  border-top: 1px solid var(--border-row);
 }
 .path {
   font-size: 11px;
   font-family: ui-monospace, Consolas, monospace;
-  color: #b0b8c9;
+  color: var(--text-4);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -1191,15 +1298,86 @@ onUnmounted(() => {
   display: flex;
   justify-content: flex-end;
 }
+
+/* 设置行(图标 + 文案 + 开关) */
+.opt-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.opt-icon {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  border-radius: 10px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.opt-icon.dark {
+  background: var(--chip-bg);
+  color: var(--text-2);
+}
+.opt-icon svg {
+  width: 18px;
+  height: 18px;
+}
+.opt-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.opt-t {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.opt-s {
+  font-size: 12px;
+  color: var(--text-3);
+}
+.switch {
+  flex: none;
+  width: 42px;
+  height: 24px;
+  border: 0;
+  border-radius: 999px;
+  background: var(--border);
+  cursor: pointer;
+  position: relative;
+  padding: 0;
+  transition: background 0.18s;
+}
+.switch .knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.18s;
+  box-shadow: none;
+}
+.switch.on {
+  background: var(--accent);
+}
+.switch.on .knob {
+  left: 21px;
+}
 .note {
   margin-top: 16px;
 }
 .note code {
   font-family: ui-monospace, Consolas, monospace;
-  background: #f2f4f7;
+  background: var(--chip-bg);
   border-radius: 4px;
   padding: 1px 5px;
-  color: #5b6478;
+  color: var(--text-2);
 }
 
 /* ========== Toast ========== */
@@ -1215,7 +1393,7 @@ onUnmounted(() => {
   z-index: 50;
 }
 .toast {
-  background: #1a1d24;
+  background: var(--toast-bg);
   color: #fff;
   font-size: 12.5px;
   padding: 10px 17px;
@@ -1239,7 +1417,7 @@ onUnmounted(() => {
 .drag-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(28, 111, 216, 0.07);
+  background: var(--drag-tint);
   z-index: 40;
   display: flex;
   align-items: center;
@@ -1247,7 +1425,7 @@ onUnmounted(() => {
   pointer-events: none;
 }
 .drag-box {
-  background: #fff;
+  background: var(--card);
   border: 1.5px dashed #1c6fd8;
   border-radius: 14px;
   padding: 20px 32px;
@@ -1256,11 +1434,11 @@ onUnmounted(() => {
 .drag-t {
   font-size: 14px;
   font-weight: 700;
-  color: #1c6fd8;
+  color: var(--accent);
 }
 .drag-s {
   font-size: 12px;
-  color: #8a93a8;
+  color: var(--text-3);
   margin-top: 4px;
 }
 
@@ -1268,14 +1446,14 @@ onUnmounted(() => {
 .modal-mask {
   position: fixed;
   inset: 0;
-  background: rgba(26, 29, 36, 0.38);
+  background: var(--mask);
   z-index: 60;
   display: flex;
   align-items: center;
   justify-content: center;
 }
 .modal {
-  background: #fff;
+  background: var(--card);
   border: 1px solid #e6e9ef;
   border-radius: 15px;
   padding: 22px;
@@ -1284,16 +1462,17 @@ onUnmounted(() => {
 .modal-t {
   font-size: 15px;
   margin-bottom: 10px;
+  color: var(--text);
 }
 .modal-desc {
   font-size: 13px;
-  color: #5b6478;
+  color: var(--text-2);
   line-height: 1.6;
   margin-bottom: 4px;
   user-select: text;
 }
 .modal-desc b {
-  color: #1a1d24;
+  color: var(--text);
   word-break: break-all;
 }
 .modal-actions {
