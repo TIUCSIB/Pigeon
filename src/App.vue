@@ -955,7 +955,7 @@ html::-webkit-scrollbar-corner {
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  padding: 0 14px 22px;
+  padding: 0 8px 10px;
   overflow: hidden;
   user-select: none;
   display: flex;
@@ -1430,6 +1430,8 @@ html::-webkit-scrollbar-corner {
   align-items: center;
   gap: 4px;
   border-bottom: 1px solid var(--border-row);
+  /* 行与行留出呼吸感(选中高亮时相邻行不至于粘连) */
+  padding: 4px 0;
 }
 .list li:last-child {
   border-bottom: 0;
@@ -1494,8 +1496,9 @@ li:has(.check.on) .row-main {
 .select-all-row {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 10px 10px 2px;
+  gap: 8px;
+  /* 左缘与列表行勾选框对齐(li 无水平 padding,check 是行内第一个元素) */
+  padding: 12px 10px 6px 0;
 }
 .sa-t {
   font-size: 12px;
