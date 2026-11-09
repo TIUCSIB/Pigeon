@@ -590,6 +590,12 @@ pub fn set_theme(
     // 窗口底色同步画布色,避免 WebView 默认白底露出突兀的边
     set_window_bg(&window, dark);
 
+    // 边框颜色跟随画布色(Windows)
+    #[cfg(windows)]
+    if let Ok(h) = window.hwnd() {
+        crate::window_style::apply(h.0 as isize, dark);
+    }
+
     // 主题是即时生效项,直接更新持久化文件里的 dark_mode
     let mut settings = crate::settings::Settings::load();
     settings.dark_mode = dark;

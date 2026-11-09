@@ -2496,6 +2496,7 @@ dependencies = [
  "tokio-stream",
  "tokio-util",
  "tower-http",
+ "windows",
  "zip",
 ]
 

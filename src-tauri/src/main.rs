@@ -4,6 +4,8 @@ mod clips;
 mod files;
 mod server;
 mod settings;
+#[cfg(windows)]
+mod window_style;
 
 use std::net::TcpListener;
 use std::sync::Arc;
@@ -77,6 +79,14 @@ fn main() {
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.set_theme(Some(Theme::Dark));
                     let _ = w.set_background_color(Some(tauri::window::Color(0x14, 0x16, 0x1a, 255)));
+                }
+            }
+
+            // Windows:无边框窗口补 DWM 圆角,边框颜色与画布一致
+            #[cfg(windows)]
+            if let Some(w) = app.get_webview_window("main") {
+                if let Ok(h) = w.hwnd() {
+                    window_style::apply(h.0 as isize, settings.dark_mode);
                 }
             }
 
