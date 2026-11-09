@@ -46,6 +46,10 @@ const textInput = ref('')
 const sending = ref(false)
 const toasts = ref<{ id: number; text: string }[]>([])
 const deleteTarget = ref<string | null>(null)
+// 确认弹窗类型:file=删单个文件 clips-clear=清空记录 files-clear=清空文件
+type ConfirmKind = 'file' | 'clips-clear' | 'files-clear'
+const confirmKind = ref<ConfirmKind | null>(null)
+const deleteClipId = ref<number | null>(null)
 // 桌面 UI 自己调 HTTP 上传接口(与手机端同通道)
 const uploadUrl = ref('')
 
@@ -187,13 +191,47 @@ async function reveal(name: string) {
 }
 
 async function doDelete() {
-  const name = deleteTarget.value
-  if (!name) return
-  deleteTarget.value = null
+  if (confirmKind.value === 'file') {
+    const name = deleteTarget.value
+    if (!name) return
+    deleteTarget.value = null
+    confirmKind.value = null
+    try {
+      await invoke('delete_file', { name })
+      toast(`已删除 ${name}`)
+      await refreshFiles()
+    } catch (e) {
+      toast(`${e}`)
+    }
+    return
+  }
+  if (confirmKind.value === 'clips-clear') {
+    confirmKind.value = null
+    try {
+      await invoke('clear_clips')
+      toast('文字记录已清空')
+      await refreshClips()
+    } catch (e) {
+      toast(`${e}`)
+    }
+    return
+  }
+  if (confirmKind.value === 'files-clear') {
+    confirmKind.value = null
+    try {
+      await invoke('clear_files')
+      toast('共享文件已清空')
+      await refreshFiles()
+    } catch (e) {
+      toast(`${e}`)
+    }
+  }
+}
+
+async function deleteClip(c: Clip) {
   try {
-    await invoke('delete_file', { name })
-    toast(`已删除 ${name}`)
-    await refreshFiles()
+    await invoke('delete_clip', { id: c.id })
+    await refreshClips()
   } catch (e) {
     toast(`${e}`)
   }
@@ -557,6 +595,7 @@ onUnmounted(() => {
             <div class="list-head">
               <span class="sec">已共享</span>
               <span class="sec-n">{{ files.length }}</span>
+              <button class="link danger-link" @click="confirmKind = 'files-clear'">清空</button>
             </div>
             <ul class="list">
               <li v-for="f in files" :key="f.name">
@@ -576,7 +615,7 @@ onUnmounted(() => {
                       />
                     </svg>
                   </button>
-                  <button class="op danger" title="删除" @click="deleteTarget = f.name">
+                  <button class="op danger" title="删除" @click="deleteTarget = f.name; confirmKind = 'file'">
                     <svg viewBox="0 0 24 24">
                       <path
                         fill="currentColor"
@@ -602,6 +641,7 @@ onUnmounted(() => {
             <div class="list-head">
               <span class="sec">文字记录</span>
               <span class="sec-n">{{ clips.length }}</span>
+              <button class="link danger-link" @click="confirmKind = 'clips-clear'">清空</button>
             </div>
             <ul class="list">
               <li v-for="c in clips" :key="c.id">
@@ -614,6 +654,16 @@ onUnmounted(() => {
                   </span>
                   <span class="clip-copy">复制</span>
                 </button>
+                <span class="row-ops">
+                  <button class="op danger" title="删除" @click="deleteClip(c)">
+                    <svg viewBox="0 0 24 24">
+                      <path
+                        fill="currentColor"
+                        d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                      />
+                    </svg>
+                  </button>
+                </span>
               </li>
             </ul>
           </template>
@@ -706,15 +756,23 @@ onUnmounted(() => {
       </div>
     </div>
 
-    <!-- 删除确认 -->
-    <div v-if="deleteTarget" class="modal-mask" @click.self="deleteTarget = null">
+    <!-- 删除/清空确认 -->
+    <div v-if="confirmKind" class="modal-mask" @click.self="confirmKind = null">
       <div class="modal">
-        <h2 class="modal-t">删除文件</h2>
-        <p class="modal-desc">
+        <h2 class="modal-t">
+          {{ confirmKind === 'file' ? '删除文件' : confirmKind === 'clips-clear' ? '清空文字记录' : '清空共享文件' }}
+        </h2>
+        <p v-if="confirmKind === 'file'" class="modal-desc">
           确定删除 <b>{{ deleteTarget }}</b> ?手机端将无法再下载该文件。
         </p>
+        <p v-else-if="confirmKind === 'clips-clear'" class="modal-desc">
+          确定清空全部 {{ clips.length }} 条文字记录?此操作不可恢复。
+        </p>
+        <p v-else class="modal-desc">
+          确定清空共享目录中的 {{ files.length }} 个文件?手机端将无法再下载,此操作不可恢复。
+        </p>
         <div class="modal-actions">
-          <button class="btn ghost" @click="deleteTarget = null">取消</button>
+          <button class="btn ghost" @click="confirmKind = null">取消</button>
           <button class="btn primary danger" @click="doDelete">删除</button>
         </div>
       </div>
@@ -750,14 +808,16 @@ onUnmounted(() => {
   --mask: rgba(26, 29, 36, 0.38);
   --toast-bg: #1a1d24;
   --drag-tint: rgba(28, 111, 216, 0.07);
-  min-height: 100vh;
+  height: 100vh;
   /* 画布底色,内容卡片浮在其上 */
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
   padding: 0 14px 16px;
-  overflow-y: auto;
+  overflow: hidden;
   user-select: none;
+  display: flex;
+  flex-direction: column;
 }
 .page.dark {
   --bg: #14161a;
@@ -787,6 +847,10 @@ onUnmounted(() => {
 }
 .shell {
   max-width: none;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* 自绘标题栏:通到窗口边缘,整行可拖拽 */
@@ -881,6 +945,10 @@ onUnmounted(() => {
   border-radius: 16px;
   overflow: hidden;
   margin-top: 6px;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
 }
 
 /* Tab */
@@ -933,6 +1001,9 @@ onUnmounted(() => {
 
 .body {
   padding: 22px;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 /* ========== 通用元素 ========== */
@@ -1196,6 +1267,12 @@ onUnmounted(() => {
 }
 .list-head .sec {
   margin-bottom: 0;
+}
+.list-head .danger-link {
+  margin-left: auto;
+}
+.danger-link {
+  color: var(--danger);
 }
 .sec-n {
   font-size: 12px;

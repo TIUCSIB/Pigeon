@@ -63,6 +63,32 @@ impl ClipsState {
         self.clips.lock().unwrap().clone()
     }
 
+    /// 删除单条记录
+    pub fn remove(&self, id: u32) -> bool {
+        let json = {
+            let mut clips = self.clips.lock().unwrap();
+            let before = clips.len();
+            clips.retain(|c| c.id != id);
+            if clips.len() == before {
+                return false;
+            }
+            serde_json::to_string(&*clips).unwrap_or_default()
+        };
+        let _ = std::fs::write(&self.path, json);
+        self.version_tx.send_modify(|v| *v += 1);
+        true
+    }
+
+    /// 清空全部记录
+    pub fn clear(&self) {
+        {
+            let mut clips = self.clips.lock().unwrap();
+            clips.clear();
+        }
+        let _ = std::fs::write(&self.path, "[]");
+        self.version_tx.send_modify(|v| *v += 1);
+    }
+
     pub fn version_rx(&self) -> watch::Receiver<u64> {
         self.version_tx.subscribe()
     }

@@ -538,6 +538,47 @@ pub fn list_clips(state: tauri::State<'_, crate::AppServer>) -> Vec<Clip> {
     state.shared.clips.list()
 }
 
+/// 删除单条文字记录
+#[tauri::command]
+pub fn delete_clip(
+    state: tauri::State<'_, crate::AppServer>,
+    id: u32,
+) -> Result<(), String> {
+    if !state.shared.clips.remove(id) {
+        return Err(format!("记录 #{id} 不存在"));
+    }
+    Ok(())
+}
+
+/// 清空全部文字记录
+#[tauri::command]
+pub fn clear_clips(state: tauri::State<'_, crate::AppServer>) -> Result<(), String> {
+    state.shared.clips.clear();
+    Ok(())
+}
+
+/// 清空共享目录中的全部文件
+#[tauri::command]
+pub async fn clear_files(state: tauri::State<'_, crate::AppServer>) -> Result<(), String> {
+    let dir = state.shared.files.dir();
+    let mut rd = tokio::fs::read_dir(&dir)
+        .await
+        .map_err(|e| format!("读取目录失败: {e}"))?;
+    let mut removed = 0usize;
+    while let Ok(Some(entry)) = rd.next_entry().await {
+        let p = entry.path();
+        if p.is_file() {
+            if let Err(e) = tokio::fs::remove_file(&p).await {
+                eprintln!("[pigeon] 删除 {} 失败: {e}", p.display());
+            } else {
+                removed += 1;
+            }
+        }
+    }
+    state.shared.files.bump();
+    Ok(())
+}
+
 /// 读取设置(桌面 UI)
 #[tauri::command]
 pub fn get_settings() -> crate::settings::Settings {
