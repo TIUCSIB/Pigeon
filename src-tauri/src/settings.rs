@@ -14,6 +14,13 @@ pub struct Settings {
     /// 暗黑模式
     #[serde(default)]
     pub dark_mode: bool,
+    /// 分享服务开关(关闭后手机端所有请求返回 403)
+    #[serde(default = "default_true")]
+    pub sharing: bool,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl Default for Settings {
@@ -22,6 +29,7 @@ impl Default for Settings {
             port: 8420,
             inbox_dir: None,
             dark_mode: false,
+            sharing: true,
         }
     }
 }
@@ -37,6 +45,11 @@ pub fn pigeon_dir() -> PathBuf {
 
 fn settings_path() -> PathBuf {
     pigeon_dir().join(SETTINGS_FILE)
+}
+
+/// 冻结文件暂存目录:取消分享的文件移到这里,源文件保留可解冻
+pub fn frozen_dir() -> PathBuf {
+    pigeon_dir().join("冻结")
 }
 
 impl Settings {

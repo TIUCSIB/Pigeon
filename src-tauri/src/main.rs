@@ -35,6 +35,11 @@ fn main() {
             server::delete_clip,
             server::clear_clips,
             server::clear_files,
+            server::toggle_sharing,
+            server::freeze_file,
+            server::unfreeze_file,
+            server::list_frozen,
+            server::delete_frozen,
             server::get_settings,
             server::save_settings,
             server::pick_inbox_dir,
@@ -70,6 +75,7 @@ fn main() {
                 clips,
                 host,
                 port,
+                settings.sharing,
             ));
             eprintln!("[pigeon] serving at {}", shared.url());
             // 把连接地址落到文件里,方便排查和找回(内容含 token,仅本机使用)

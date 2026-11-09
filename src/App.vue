@@ -31,6 +31,12 @@ interface Clip {
 interface Settings {
   port: number
   inbox_dir: string | null
+  sharing?: boolean
+}
+
+interface FrozenEntry {
+  name: string
+  size: number
 }
 
 type Tab = 'connect' | 'files' | 'clips' | 'settings'
@@ -106,6 +112,11 @@ const settingsDir = ref('')
 const settingsLoaded = ref(false)
 // 暗黑模式(即时生效并持久化)
 const darkMode = ref(false)
+// 分享开关(绿点呼吸/红点)
+const sharing = ref(true)
+// 冻结文件列表(多选模式或折叠面板展示)
+const frozen = ref<FrozenEntry[]>([])
+const showFrozen = ref(false)
 // 自绘标题栏(固定小卡片窗口,无最大化)
 const appWindow = getCurrentWindow()
 
@@ -114,6 +125,55 @@ async function winMinimize() {
 }
 async function winClose() {
   await appWindow.close()
+}
+
+async function toggleSharing() {
+  const next = !sharing.value
+  try {
+    await invoke('toggle_sharing', { on: next })
+    sharing.value = next
+    toast(next ? '分享已开启' : '分享已关闭,手机端将无法访问')
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function refreshFrozen() {
+  try {
+    frozen.value = await invoke<FrozenEntry[]>('list_frozen')
+  } catch {
+    // ignore
+  }
+}
+
+async function freezeFile(name: string) {
+  try {
+    await invoke('freeze_file', { name })
+    toast(`已取消分享 ${name}(源文件保留)`)
+    await Promise.all([refreshFiles(), refreshFrozen()])
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function unfreezeFile(name: string) {
+  try {
+    await invoke('unfreeze_file', { name })
+    toast(`已恢复分享 ${name}`)
+    await Promise.all([refreshFiles(), refreshFrozen()])
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function deleteFrozen(name: string) {
+  try {
+    await invoke('delete_frozen', { name })
+    toast('已彻底删除')
+    await refreshFrozen()
+  } catch (e) {
+    toast(`${e}`)
+  }
 }
 
 let toastSeq = 0
@@ -446,6 +506,7 @@ async function loadSettings() {
     settingsPort.value = s.port === 0 ? '' : String(s.port)
     settingsDir.value = s.inbox_dir ?? ''
     applyTheme(s.dark_mode)
+    sharing.value = s.sharing !== false
     settingsLoaded.value = true
   } catch (e) {
     toast(`${e}`)
@@ -506,7 +567,13 @@ onMounted(async () => {
   } else {
     toast('服务启动失败,请查看控制台日志')
   }
-  await Promise.all([refreshFiles(), refreshClips(), loadSettings()])
+  await Promise.all([refreshFiles(), refreshClips(), loadSettings(), refreshFrozen()])
+
+  unlisteners.push(
+    await listen<boolean>('sharing-changed', (event) => {
+      sharing.value = event.payload
+    }),
+  )
 
   unlisteners.push(
     await listen<{ name: string; size: number; source: string }>('file-added', async (event) => {
@@ -558,7 +625,14 @@ onUnmounted(() => {
           <span class="brand-name" data-tauri-drag-region>Pigeon</span>
         </div>
         <div class="titlebar-right">
-          <span v-if="info" class="status" data-tauri-drag-region><i></i>{{ info.host }}:{{ info.port }}</span>
+          <button
+            class="status"
+            :class="{ off: !sharing }"
+            :title="sharing ? '分享开启中,点击关闭' : '分享已关闭,点击开启'"
+            @click="toggleSharing"
+          >
+            <i></i>{{ sharing ? '分享中' : '已关闭' }}
+          </button>
           <div class="win-btns">
             <button class="win-btn" title="最小化" @click="winMinimize">
               <svg viewBox="0 0 10 10"><path d="M0 5h10" stroke="currentColor" stroke-width="1" /></svg>
@@ -701,6 +775,15 @@ onUnmounted(() => {
                         />
                       </svg>
                     </button>
+                    <button class="op" title="取消分享(源文件保留)" @click="freezeFile(f.name)">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M20.3 17.6c-.3-.6-.9-1-1.5-1.2.4-.6.6-1.3.5-2.1-.2-1.5-1.5-2.7-3-2.9-.7-.1-1.4 0-2 .3C14 10 12.7 8.9 11.1 8.9c-1.9 0-3.5 1.4-3.7 3.3-1.4.2-2.5 1.3-2.7 2.7-.2 1.6.8 3.1 2.3 3.5.3.1.6.1.9.1h10.5c.6 0 1.2-.3 1.7-.7.3-.1.3-.2.2-.2zM12 5.5l2.5 2.5H13v3h-2V8H9.5L12 5.5zM19 14.5l-2.5-2.5H17V9h-2v3h-1.5L16 14.5 19 14.5z"
+                          transform="scale(0.9) translate(1.5 1.5)"
+                        />
+                      </svg>
+                    </button>
                     <button class="op danger" title="删除" @click="deleteTarget = f.name; confirmKind = 'file'">
                       <svg viewBox="0 0 24 24">
                         <path
@@ -730,6 +813,49 @@ onUnmounted(() => {
               </div>
             </template>
             <p v-else class="empty">还没有文件,拖一个进来试试</p>
+
+            <!-- 已冻结(取消分享)的文件:折叠面板 -->
+            <template v-if="frozen.length">
+              <button class="frozen-toggle" @click="showFrozen = !showFrozen">
+                <svg
+                  viewBox="0 0 24 24"
+                  class="chev"
+                  :class="{ open: showFrozen }"
+                >
+                  <path fill="currentColor" d="M7.4 8.6L12 13.2l4.6-4.6L18 10l-6 6-6-6z" />
+                </svg>
+                已取消分享 <span class="sec-n">{{ frozen.length }}</span>
+              </button>
+              <ul v-show="showFrozen" class="list frozen-list">
+                <li v-for="fr in frozen" :key="fr.name">
+                  <button class="row-main" :title="fr.name">
+                    <span class="ext frozen-ext">❄</span>
+                    <span class="row-text">
+                      <span class="row-name">{{ fr.name }}</span>
+                      <span class="row-sub">{{ fmtSize(fr.size) }} · 手机端不可见</span>
+                    </span>
+                  </button>
+                  <span class="row-ops">
+                    <button class="op" title="恢复分享" @click="unfreezeFile(fr.name)">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z"
+                        />
+                      </svg>
+                    </button>
+                    <button class="op danger" title="彻底删除" @click="deleteFrozen(fr.name)">
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          fill="currentColor"
+                          d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                        />
+                      </svg>
+                    </button>
+                  </span>
+                </li>
+              </ul>
+            </template>
           </div>
 
           <!-- 固定底栏:多选时显示批量操作,否则显示路径 -->
@@ -1068,13 +1194,39 @@ html::-webkit-scrollbar-corner {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-family: ui-monospace, Consolas, monospace;
+  font-family: inherit;
+  border: 0;
+  background: none;
+  padding: 4px 8px;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.status:hover {
+  background: var(--hover);
 }
 .status i {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   background: var(--ok);
+  /* 开启状态:绿色呼吸 */
+  animation: breath 2.2s ease-in-out infinite;
+}
+.status.off i {
+  background: var(--danger);
+  animation: none;
+}
+@keyframes breath {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 160, 107, 0.45);
+    opacity: 1;
+  }
+  50% {
+    box-shadow: 0 0 0 4px rgba(34, 160, 107, 0);
+    opacity: 0.75;
+  }
 }
 
 /* 内容卡:独立浮层,圆角 + 描边,与画布区分 */
@@ -1523,6 +1675,46 @@ li:has(.check.on) .row-main {
 .sa-t {
   font-size: 12px;
   color: var(--text-3);
+}
+
+/* 已冻结(取消分享)折叠面板 */
+.frozen-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  border: 0;
+  background: none;
+  padding: 10px 10px;
+  margin-top: 8px;
+  border-radius: 8px;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text-3);
+  cursor: pointer;
+  font-family: inherit;
+}
+.frozen-toggle:hover {
+  background: var(--hover);
+  color: var(--text-2);
+}
+.frozen-toggle .chev {
+  width: 14px;
+  height: 14px;
+  transition: transform 0.15s;
+}
+.frozen-toggle .chev.open {
+  transform: rotate(180deg);
+}
+.frozen-list {
+  margin: 0 0 6px;
+}
+.frozen-list .row-main {
+  opacity: 0.7;
+}
+.frozen-ext {
+  color: var(--text-3);
+  font-size: 13px;
 }
 
 .batch-n {

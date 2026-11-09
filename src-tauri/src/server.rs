@@ -27,6 +27,8 @@ pub struct AppState {
     pub host: String,
     pub port: u16,
     pub token: String,
+    /// 分享开关:关闭后手机端所有路由返回 403
+    pub sharing: std::sync::atomic::AtomicBool,
 }
 
 impl AppState {
@@ -35,14 +37,24 @@ impl AppState {
         clips: ClipsState,
         host: String,
         port: u16,
+        sharing: bool,
     ) -> Self {
         Self {
             files,
             clips,
             host,
             port,
+            sharing: std::sync::atomic::AtomicBool::new(sharing),
             token: Alphanumeric.sample_string(&mut rand::rng(), TOKEN_LEN),
         }
+    }
+
+    pub fn is_sharing(&self) -> bool {
+        self.sharing.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn set_sharing(&self, on: bool) {
+        self.sharing.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
     pub fn url(&self) -> String {
@@ -79,6 +91,8 @@ fn router(app: AppHandle, state: SharedState) -> Router {
     // 不知道完整链接的请求自然落到 404,无需额外鉴权中间件
     // (axum 的路由匹配先于 layer 执行,改写 URI 的中间件方案行不通)
     let p = format!("/s/{}", state.token);
+    // 分享开关守卫用的状态克隆(with_state 会 move 走 state)
+    let guard_state = state.clone();
     Router::new()
         .route(&p, get(redirect_to_slash))
         .route(&format!("{p}/"), get(mobile_home))
@@ -99,6 +113,27 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         .layer(CorsLayer::permissive())
         // app handle 供 upload 发事件用
         .layer(axum::Extension(app))
+        // 分享开关守卫:关闭时手机端所有请求返回 403
+        .layer({
+            let guard = guard_state;
+            axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    let guard = guard.clone();
+                    async move {
+                        if guard.is_sharing() {
+                            next.run(req).await
+                        } else {
+                            (
+                                StatusCode::FORBIDDEN,
+                                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                                "Pigeon 分享已关闭",
+                            )
+                                .into_response()
+                        }
+                    }
+                },
+            )
+        })
 }
 
 /// /s/{token} -> /s/{token}/ :补斜杠让页面里的相对路径解析到 token 前缀下
@@ -579,6 +614,104 @@ pub async fn clear_files(state: tauri::State<'_, crate::AppServer>) -> Result<()
     Ok(())
 }
 
+/// 切换分享开关并持久化
+#[tauri::command]
+pub fn toggle_sharing(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppServer>,
+    on: bool,
+) -> Result<(), String> {
+    state.shared.set_sharing(on);
+    let mut settings = crate::settings::Settings::load();
+    settings.sharing = on;
+    settings.save()?;
+    let _ = app.emit("sharing-changed", on);
+    Ok(())
+}
+
+/// 冻结分享:文件从共享目录移入 ~/Pigeon/冻结/,手机端立即不可见,源文件保留
+#[tauri::command]
+pub async fn freeze_file(
+    state: tauri::State<'_, crate::AppServer>,
+    name: String,
+) -> Result<(), String> {
+    let safe = crate::files::sanitize(&name);
+    let src = state.shared.files.dir().join(&safe);
+    if !src.is_file() {
+        return Err("文件不存在".into());
+    }
+    let frozen_dir = crate::settings::frozen_dir();
+    tokio::fs::create_dir_all(&frozen_dir)
+        .await
+        .map_err(|e| format!("创建冻结目录失败: {e}"))?;
+    // 冻结目录内重名时加后缀,避免覆盖
+    let dst = crate::files::unique_name(&frozen_dir, &safe);
+    tokio::fs::rename(&src, frozen_dir.join(&dst))
+        .await
+        .map_err(|e| format!("冻结失败: {e}"))?;
+    state.shared.files.bump();
+    Ok(())
+}
+
+/// 解冻:文件从冻结目录移回共享目录,恢复对手机端可见
+#[tauri::command]
+pub async fn unfreeze_file(
+    state: tauri::State<'_, crate::AppServer>,
+    name: String,
+) -> Result<(), String> {
+    let safe = crate::files::sanitize(&name);
+    let frozen_dir = crate::settings::frozen_dir();
+    let src = frozen_dir.join(&safe);
+    if !src.is_file() {
+        return Err("冻结记录不存在".into());
+    }
+    let dir = state.shared.files.dir();
+    let dst = crate::files::unique_name(&dir, &safe);
+    tokio::fs::rename(&src, dir.join(&dst))
+        .await
+        .map_err(|e| format!("解冻失败: {e}"))?;
+    state.shared.files.bump();
+    Ok(())
+}
+
+/// 冻结文件列表
+#[derive(serde::Serialize)]
+pub struct FrozenEntry {
+    pub name: String,
+    pub size: u64,
+}
+
+#[tauri::command]
+pub fn list_frozen() -> Vec<FrozenEntry> {
+    let dir = crate::settings::frozen_dir();
+    let mut out = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for entry in rd.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if !meta.is_file() {
+                continue;
+            }
+            out.push(FrozenEntry {
+                name: entry.file_name().to_string_lossy().to_string(),
+                size: meta.len(),
+            });
+        }
+    }
+    out.sort_by(|a, b| a.name.cmp(&b.name));
+    out
+}
+
+/// 彻底删除冻结文件
+#[tauri::command]
+pub async fn delete_frozen(name: String) -> Result<(), String> {
+    let safe = crate::files::sanitize(&name);
+    let path = crate::settings::frozen_dir().join(safe);
+    tokio::fs::remove_file(&path)
+        .await
+        .map_err(|e| format!("删除失败: {e}"))?;
+    Ok(())
+}
+
 /// 读取设置(桌面 UI)
 #[tauri::command]
 pub fn get_settings() -> crate::settings::Settings {
@@ -599,6 +732,7 @@ pub async fn save_settings(
         port,
         inbox_dir,
         dark_mode: dark_mode.unwrap_or(false),
+        sharing: state.shared.is_sharing(),
     };
     settings.save()?;
 
