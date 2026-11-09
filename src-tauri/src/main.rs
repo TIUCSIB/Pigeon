@@ -71,11 +71,12 @@ fn main() {
             let _ = std::fs::write(pigeon_dir.join("server-url.txt"), shared.url());
             app.manage(AppServer { shared: shared.clone() });
 
-            // 恢复上次保存的窗口主题
+            // 恢复上次保存的窗口主题(含窗口底色,避免暗色下露白边)
             if settings.dark_mode {
-                use tauri::Theme;
+                use tauri::{Manager, Theme};
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.set_theme(Some(Theme::Dark));
+                    let _ = w.set_background_color(Some(tauri::window::Color(0x1c, 0x1f, 0x24, 255)));
                 }
             }
 

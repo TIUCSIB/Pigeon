@@ -784,7 +784,8 @@ onUnmounted(() => {
   --drag-tint: rgba(77, 143, 240, 0.09);
 }
 .shell {
-  max-width: none;
+  max-width: 640px;
+  margin: 0 auto;
 }
 
 /* 自绘标题栏:通到窗口边缘,整行可拖拽 */
