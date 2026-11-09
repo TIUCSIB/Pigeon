@@ -337,8 +337,8 @@ function applyTheme(dark: boolean) {
   darkMode.value = dark
   // 根元素类驱动 scoped 样式里的 .page.dark 变量;color-scheme 让滚动条等原生控件跟随
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
-  // 同步 html 底色,窗口边缘露出的部分与主题一致(暗色防白边)
-  document.documentElement.style.backgroundColor = dark ? '#1c1f24' : '#ffffff'
+  // 同步 html 底色,窗口边缘露出的部分与画布一致(暗色防白边)
+  document.documentElement.style.backgroundColor = dark ? '#14161a' : '#f1f2f4'
 }
 
 async function toggleDark() {
@@ -751,11 +751,11 @@ onUnmounted(() => {
   --toast-bg: #1a1d24;
   --drag-tint: rgba(28, 111, 216, 0.07);
   min-height: 100vh;
-  /* 窗口即卡片:整个窗口就是一张卡,不再有外圈灰底 */
-  background: var(--card);
+  /* 画布底色,内容卡片浮在其上 */
+  background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  padding: 0 16px 20px;
+  padding: 0 14px 16px;
   overflow-y: auto;
   user-select: none;
 }
@@ -874,13 +874,13 @@ onUnmounted(() => {
   background: var(--ok);
 }
 
-/* 内容卡:铺满窗口宽度,窗口边缘裁切(窗口即卡片) */
+/* 内容卡:独立浮层,圆角 + 描边,与画布区分 */
 .card {
   background: var(--card);
-  border: 0;
-  border-top: 1px solid var(--border-soft);
-  border-radius: 0;
-  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  overflow: hidden;
+  margin-top: 6px;
 }
 
 /* Tab */

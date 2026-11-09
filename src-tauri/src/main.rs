@@ -76,7 +76,7 @@ fn main() {
                 use tauri::{Manager, Theme};
                 if let Some(w) = app.get_webview_window("main") {
                     let _ = w.set_theme(Some(Theme::Dark));
-                    let _ = w.set_background_color(Some(tauri::window::Color(0x1c, 0x1f, 0x24, 255)));
+                    let _ = w.set_background_color(Some(tauri::window::Color(0x14, 0x16, 0x1a, 255)));
                 }
             }
 

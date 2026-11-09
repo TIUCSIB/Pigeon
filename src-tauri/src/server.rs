@@ -587,7 +587,7 @@ pub fn set_theme(
     window
         .set_theme(Some(if dark { Theme::Dark } else { Theme::Light }))
         .map_err(|e| e.to_string())?;
-    // 窗口底色同步主题色,避免 WebView 默认白底在暗色下露出白边
+    // 窗口底色同步画布色,避免 WebView 默认白底露出突兀的边
     set_window_bg(&window, dark);
 
     // 主题是即时生效项,直接更新持久化文件里的 dark_mode
@@ -597,9 +597,9 @@ pub fn set_theme(
     Ok(())
 }
 
-/// 窗口/WebView 底色跟随主题(亮:#ffffff,暗:#1c1f24)
+/// 窗口/WebView 底色跟随主题(画布色:亮 #f1f2f4,暗 #14161a)
 fn set_window_bg(window: &tauri::WebviewWindow, dark: bool) {
-    let (r, g, b) = if dark { (0x1c, 0x1f, 0x24) } else { (0xff, 0xff, 0xff) };
+    let (r, g, b) = if dark { (0x14, 0x16, 0x1a) } else { (0xf1, 0xf2, 0xf4) };
     let _ = window.set_background_color(Some(tauri::window::Color(r, g, b, 255)));
 }
 
