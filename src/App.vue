@@ -337,6 +337,8 @@ function applyTheme(dark: boolean) {
   darkMode.value = dark
   // 根元素类驱动 scoped 样式里的 .page.dark 变量;color-scheme 让滚动条等原生控件跟随
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
+  // 同步 html 底色,窗口边缘露出的部分与主题一致(暗色防白边)
+  document.documentElement.style.backgroundColor = dark ? '#1c1f24' : '#ffffff'
 }
 
 async function toggleDark() {
@@ -784,8 +786,7 @@ onUnmounted(() => {
   --drag-tint: rgba(77, 143, 240, 0.09);
 }
 .shell {
-  max-width: 640px;
-  margin: 0 auto;
+  max-width: none;
 }
 
 /* 自绘标题栏:通到窗口边缘,整行可拖拽 */

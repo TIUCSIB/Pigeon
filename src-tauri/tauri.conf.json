@@ -20,6 +20,7 @@
         "resizable": false,
         "maximizable": false,
         "decorations": false,
+        "backgroundColor": "#ffffff",
         "dragDropEnabled": false
       }
     ],
