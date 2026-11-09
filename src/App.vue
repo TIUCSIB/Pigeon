@@ -32,6 +32,7 @@ interface Settings {
   port: number
   inbox_dir: string | null
   sharing?: boolean
+  dark_mode?: boolean
 }
 
 interface FrozenEntry {
@@ -46,6 +47,56 @@ const info = ref<ServerInfo | null>(null)
 const qr = ref('')
 const files = ref<FileEntry[]>([])
 const clips = ref<Clip[]>([])
+
+// 文件/记录:搜索 + 排序(纯前端过滤,数据量大时也即时响应)
+const fileQuery = ref('')
+const fileSort = ref<'time' | 'name' | 'size'>('time')
+const fileSortAsc = ref(false)
+const clipQuery = ref('')
+const clipSort = ref<'time' | 'name'>('time')
+
+const filteredFiles = computed(() => {
+  const q = fileQuery.value.trim().toLowerCase()
+  let list = q
+    ? files.value.filter((f) => f.name.toLowerCase().includes(q))
+    : [...files.value]
+  const dir = fileSortAsc.value ? 1 : -1
+  list.sort((a, b) => {
+    if (fileSort.value === 'name') return a.name.localeCompare(b.name, 'zh-CN') * dir
+    if (fileSort.value === 'size') return (a.size - b.size) * dir
+    return (a.modified - b.modified) * dir
+  })
+  return list
+})
+
+const filteredClips = computed(() => {
+  const q = clipQuery.value.trim().toLowerCase()
+  let list = q
+    ? clips.value.filter((c) => c.content.toLowerCase().includes(q))
+    : [...clips.value]
+  const dir = clipSort.value === 'name' ? 1 : -1 // 记录默认最新在前
+  if (clipSort.value === 'name') {
+    list.sort((a, b) => a.content.localeCompare(b.content, 'zh-CN') * dir)
+  } else {
+    list.sort((a, b) => (a.created - b.created) * dir)
+  }
+  return list
+})
+
+function cycleFileSort() {
+  const order: Array<'time' | 'name' | 'size'> = ['time', 'name', 'size']
+  const i = order.indexOf(fileSort.value)
+  fileSort.value = order[(i + 1) % order.length]
+}
+function cycleClipSort() {
+  clipSort.value = clipSort.value === 'time' ? 'name' : 'time'
+}
+
+const fileSortLabel = computed(
+  () => ({ time: '按时间', name: '按名称', size: '按大小' })[fileSort.value],
+)
+const fileSortDirLabel = computed(() => (fileSortAsc.value ? '↑' : '↓'))
+const clipSortLabel = computed(() => (clipSort.value === 'time' ? '按时间' : '按名称'))
 const dragging = ref(false)
 const uploading = ref(false)
 const textInput = ref('')
@@ -505,7 +556,7 @@ async function loadSettings() {
     const s = await invoke<Settings>('get_settings')
     settingsPort.value = s.port === 0 ? '' : String(s.port)
     settingsDir.value = s.inbox_dir ?? ''
-    applyTheme(s.dark_mode)
+    applyTheme(s.dark_mode === true)
     sharing.value = s.sharing !== false
     settingsLoaded.value = true
   } catch (e) {
@@ -755,8 +806,23 @@ onUnmounted(() => {
                   {{ selecting ? '取消选择' : '选择' }}
                 </button>
               </div>
+              <div class="tools-row">
+                <input
+                  v-model="fileQuery"
+                  class="tools-search"
+                  type="search"
+                  placeholder="搜索文件名…"
+                />
+                <button
+                  class="sort-btn"
+                  :title="`当前${fileSortLabel}${fileSortDirLabel},点击切换排序字段`"
+                  @click="cycleFileSort"
+                >
+                  {{ fileSortLabel }} {{ fileSortDirLabel }}
+                </button>
+              </div>
               <ul class="list">
-                <li v-for="f in files" :key="f.name">
+                <li v-for="f in filteredFiles" :key="f.name">
                   <!-- 多选模式:行首勾选框,点行切换选中 -->
                   <button
                     v-if="selecting"
@@ -904,8 +970,19 @@ onUnmounted(() => {
               <span class="sec-n">{{ clips.length }}</span>
               <button class="link danger-link" @click="confirmKind = 'clips-clear'">清空</button>
             </div>
+            <div class="tools-row">
+              <input
+                v-model="clipQuery"
+                class="tools-search"
+                type="search"
+                placeholder="搜索记录内容…"
+              />
+              <button class="sort-btn" title="切换排序方式" @click="cycleClipSort">
+                {{ clipSortLabel }}
+              </button>
+            </div>
             <ul class="list">
-              <li v-for="c in clips" :key="c.id">
+              <li v-for="c in filteredClips" :key="c.id">
                 <button class="row-main clip-row" title="点击复制" @click="copyText(c.content)">
                   <span class="row-text">
                     <span class="clip-text">{{ c.content }}</span>
@@ -1728,6 +1805,57 @@ li:has(.check.on) .row-main {
 .sa-t {
   font-size: 12px;
   color: var(--text-3);
+}
+
+/* 搜索 + 排序工具行 */
+.tools-row {
+  display: flex;
+  gap: 8px;
+  margin: 4px 0 10px;
+}
+.tools-search {
+  flex: 1;
+  min-width: 0;
+  height: 34px;
+  border: 1px solid var(--border);
+  background: var(--field-bg);
+  border-radius: 9px;
+  padding: 0 12px;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text);
+  box-sizing: border-box;
+  user-select: text;
+  transition: border-color 0.15s;
+}
+.tools-search::placeholder {
+  color: var(--text-4);
+}
+.tools-search:focus {
+  outline: none;
+  border-color: var(--accent);
+  background: var(--card);
+}
+.tools-search::-webkit-search-cancel-button {
+  -webkit-appearance: none;
+}
+.sort-btn {
+  flex: none;
+  height: 34px;
+  border: 1px solid var(--border);
+  background: var(--card);
+  border-radius: 9px;
+  padding: 0 12px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  font-family: inherit;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.sort-btn:hover {
+  background: var(--hover);
+  color: var(--text);
 }
 
 /* 已冻结(取消分享)折叠面板 */
