@@ -749,10 +749,11 @@ onUnmounted(() => {
   --toast-bg: #1a1d24;
   --drag-tint: rgba(28, 111, 216, 0.07);
   min-height: 100vh;
-  background: var(--bg);
+  /* 窗口即卡片:整个窗口就是一张卡,不再有外圈灰底 */
+  background: var(--card);
   color: var(--text);
   font-family: system-ui, -apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
-  padding: 0 16px 24px;
+  padding: 0 16px 20px;
   overflow-y: auto;
   user-select: none;
 }
@@ -783,8 +784,7 @@ onUnmounted(() => {
   --drag-tint: rgba(77, 143, 240, 0.09);
 }
 .shell {
-  max-width: 640px;
-  margin: 0 auto;
+  max-width: none;
 }
 
 /* 自绘标题栏:通到窗口边缘,整行可拖拽 */
@@ -795,6 +795,7 @@ onUnmounted(() => {
   height: 46px;
   margin: 0 -16px; /* 抵消页面左右 padding */
   padding-left: 16px;
+  flex: none;
 }
 .titlebar-right {
   display: flex;
@@ -871,12 +872,13 @@ onUnmounted(() => {
   background: var(--ok);
 }
 
-/* 卡片 */
+/* 内容卡:铺满窗口宽度,窗口边缘裁切(窗口即卡片) */
 .card {
   background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 16px;
-  overflow: hidden;
+  border: 0;
+  border-top: 1px solid var(--border-soft);
+  border-radius: 0;
+  overflow: visible;
 }
 
 /* Tab */
