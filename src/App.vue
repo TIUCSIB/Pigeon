@@ -627,6 +627,10 @@ function applyTheme(dark: boolean) {
   document.documentElement.style.colorScheme = dark ? 'dark' : 'light'
   // 同步 html 底色,窗口边缘露出的部分与画布一致(暗色防白边)
   document.documentElement.style.backgroundColor = dark ? '#14161a' : '#f1f2f4'
+  // 镜像到 localStorage:下次启动 index.html 的启动画面在 Vue 挂载前就能读到,跟随主题
+  try {
+    localStorage.setItem('pigeon:dark', dark ? '1' : '0')
+  } catch {}
 }
 
 async function toggleDark() {

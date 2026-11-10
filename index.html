@@ -16,9 +16,76 @@
       body {
         overflow: hidden;
       }
+
+      /* ========== 启动画面:Vue 挂载前的空白期显示,挂载完成后由 main.ts 移除 ========== */
+      #splash {
+        position: fixed;
+        inset: 0;
+        background: #f1f2f4;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 22px;
+        transition: opacity 0.25s ease;
+      }
+      #splash.dark {
+        background: #14161a;
+      }
+      #splash img {
+        width: 72px;
+        height: 72px;
+        border-radius: 18px;
+        -webkit-user-drag: none;
+        user-select: none;
+      }
+      /* 不确定进度:滑块往复 */
+      #splash-bar {
+        width: 148px;
+        height: 3px;
+        border-radius: 99px;
+        background: rgba(28, 111, 216, 0.16);
+        overflow: hidden;
+      }
+      #splash-bar::after {
+        content: '';
+        display: block;
+        width: 42%;
+        height: 100%;
+        border-radius: 99px;
+        background: #1c6fd8;
+        animation: splash-slide 1.1s ease-in-out infinite;
+      }
+      @keyframes splash-slide {
+        from {
+          transform: translateX(-105%);
+        }
+        to {
+          transform: translateX(350%);
+        }
+      }
+      /* 暗色进度条配色 */
+      #splash.dark #splash-bar {
+        background: rgba(77, 143, 240, 0.2);
+      }
+      #splash.dark #splash-bar::after {
+        background: #4d8ff0;
+      }
     </style>
   </head>
   <body>
+    <div id="splash">
+      <img src="/logo.png" alt="" draggable="false" />
+      <div id="splash-bar"></div>
+    </div>
+    <script>
+      // 跟随上次退出时的主题(App.vue 每次切换主题时镜像到 localStorage);
+      // 首帧就要生效,不能等 Vue 挂载
+      try {
+        if (localStorage.getItem('pigeon:dark') === '1')
+          document.getElementById('splash')?.classList.add('dark');
+      } catch {}
+    </script>
     <div id="app"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
