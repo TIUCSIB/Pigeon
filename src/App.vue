@@ -1305,8 +1305,11 @@ onUnmounted(() => {
             </p>
           </div>
 
-          <div v-if="authEnabled || accounts.length" class="field">
+          <div class="field">
             <label>账号</label>
+            <p v-if="!accounts.length" class="sub" style="margin: 0 0 10px">
+              还没有账号。添加后打开上方的「账号认证」开关,手机端就需要登录才能访问。
+            </p>
             <ul class="acc-list">
               <li v-for="a in accounts" :key="a.username">
                 <span class="acc-name">{{ a.username }}</span>
@@ -1395,11 +1398,11 @@ onUnmounted(() => {
 </template>
 
 <style scoped>
-/* 细滚动条,契合扁平主题;颜色走变量,暗色自动跟随 */
+/* 细滚动条:默认隐形,鼠标悬停滚动区才浮现,不干扰视觉 */
 .page ::-webkit-scrollbar,
 html::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 .page ::-webkit-scrollbar-track,
 html::-webkit-scrollbar-track {
@@ -1407,12 +1410,13 @@ html::-webkit-scrollbar-track {
 }
 .page ::-webkit-scrollbar-thumb,
 html::-webkit-scrollbar-thumb {
-  background: var(--border);
+  background: transparent;
   border-radius: 999px;
 }
-.page ::-webkit-scrollbar-thumb:hover,
-html::-webkit-scrollbar-thumb:hover {
-  background: var(--text-4);
+.page .body:hover::-webkit-scrollbar-thumb,
+.page .body-scroll:hover::-webkit-scrollbar-thumb,
+.page ::-webkit-scrollbar-thumb:hover {
+  background: var(--border);
 }
 .page ::-webkit-scrollbar-corner,
 html::-webkit-scrollbar-corner {
