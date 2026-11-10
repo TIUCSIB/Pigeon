@@ -555,6 +555,11 @@ pub async fn share_files(
             skipped.push(format!("{name}({e})"));
             continue;
         }
+        // Windows 上复制会继承源文件的修改时间;共享文件应以
+        // "进入共享目录"的时间为准,否则老文件一分享就显示几天前
+        if let Ok(f) = std::fs::OpenOptions::new().write(true).open(&dst) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
         let _ = app.emit(
             "file-added",
             json!({ "name": unique, "size": meta.len(), "source": "desktop" }),
