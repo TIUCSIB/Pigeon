@@ -1,0 +1,128 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="hero-title hero-desc">
+  <title id="hero-title">Pigeon — 局域网文件互传</title>
+  <desc id="hero-desc">Pigeon:桌面 App 与手机扫码即用的局域网文件互传工具,手机无需安装。画面右侧为桌面端二维码连接面板与手机端文件页的示意。</desc>
+
+  <defs>
+    <linearGradient id="heroBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e1420"/>
+      <stop offset="1" stop-color="#131b2e"/>
+    </linearGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4a7cff"/>
+      <stop offset="1" stop-color="#2f5de0"/>
+    </linearGradient>
+    <linearGradient id="phoneScreen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6f7fb"/>
+      <stop offset="1" stop-color="#eef1f8"/>
+    </linearGradient>
+    <clipPath id="heroClip"><rect width="1200" height="360" rx="26"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#heroClip)">
+    <rect width="1200" height="360" fill="url(#heroBg)"/>
+
+    <!-- 传输路径 motif:从桌面卡片飞向手机的虚线弧 + 鸽点 -->
+    <path d="M660 84 C 760 44, 860 46, 948 112" fill="none" stroke="#4a7cff" stroke-width="2.5" stroke-dasharray="1 9" stroke-linecap="round" opacity=".85"/>
+    <circle cx="948" cy="112" r="4.5" fill="#4a7cff"/>
+
+    <!-- ================= 左:标题区 ================= -->
+    <g transform="translate(72 64)">
+      <!-- 品牌 logo:圆角方块 + 白鸽 P -->
+      <g transform="translate(0 0)">
+        <rect width="64" height="64" rx="16" fill="url(#brand)"/>
+        <path d="M14 46 L14 24 C14 17 19 12 26 12 L36 12 C46 12 52 19 52 28 C52 37 46 44 36 44 L28 44 L28 46 Z" fill="#fff" opacity=".92"/>
+        <path d="M26 30 C29 24 36 21 43 22 C41 27 36 30 30 31 Z" fill="#4a7cff"/>
+        <circle cx="27" cy="20" r="1.6" fill="#4a7cff"/>
+      </g>
+      <text x="82" y="34" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif" font-size="20" fill="#8fa3c8" letter-spacing="4">局域网文件互传</text>
+      <text x="82" y="66" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif" font-size="46" font-weight="800" fill="#f2f6ff">Pigeon</text>
+    </g>
+
+    <g transform="translate(72 176)">
+      <text font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif" font-size="23" fill="#dbe4f5">手机扫码即用,<tspan font-weight="700" fill="#7ea4ff">无需安装任何东西</tspan></text>
+      <text y="40" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="16" fill="#63719a">流式上传 · 断点续传 · 文件夹打包 zip · 文字/截图互传</text>
+    </g>
+
+    <!-- 标签行 -->
+    <g transform="translate(72 268)" font-family="ui-monospace,SFMono-Regular,Menlo,monospace" font-size="15">
+      <rect width="104" height="34" rx="17" fill="#1a2438" stroke="#2c3a5c"/>
+      <text x="52" y="22" text-anchor="middle" fill="#8fa3c8">Tauri 2</text>
+      <rect x="114" width="104" height="34" rx="17" fill="#1a2438" stroke="#2c3a5c"/>
+      <text x="166" y="22" text-anchor="middle" fill="#8fa3c8">Vue 3</text>
+      <rect x="228" width="104" height="34" rx="17" fill="#1a2438" stroke="#2c3a5c"/>
+      <text x="280" y="22" text-anchor="middle" fill="#8fa3c8">Rust axum</text>
+      <rect x="340" width="132" height="34" rx="17" fill="#1a2438" stroke="#2c3a5c"/>
+      <text x="406" y="22" text-anchor="middle" fill="#7ea4ff">零依赖手机端</text>
+    </g>
+
+    <!-- ================= 右:证明区(桌面二维码卡 + 手机) ================= -->
+    <!-- 桌面连接卡 -->
+    <g transform="translate(546 96)">
+      <rect width="320" height="188" rx="18" fill="#18213a" stroke="#2c3a5c"/>
+      <text x="24" y="34" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif" font-size="16" font-weight="600" fill="#dbe4f5">手机扫码连接</text>
+      <!-- 简化二维码 -->
+      <g transform="translate(24 50)" fill="#e8eeff">
+        <rect width="108" height="108" rx="8" fill="#0d1322"/>
+        <g transform="translate(9 9)">
+          <rect width="26" height="26" rx="4" fill="none" stroke="#e8eeff" stroke-width="5"/><rect x="8" y="8" width="10" height="10" fill="#e8eeff"/>
+          <rect x="63" width="26" height="26" rx="4" fill="none" stroke="#e8eeff" stroke-width="5"/><rect x="71" y="8" width="10" height="10" fill="#e8eeff"/>
+          <rect y="63" width="26" height="26" rx="4" fill="none" stroke="#e8eeff" stroke-width="5"/><rect x="8" y="71" width="10" height="10" fill="#e8eeff"/>
+          <rect x="36" width="8" height="8"/><rect x="48" y="10" width="8" height="8"/><rect x="36" y="22" width="8" height="8"/>
+          <rect x="40" y="38" width="8" height="8"/><rect x="54" y="46" width="8" height="8"/><rect x="38" y="54" width="8" height="8"/>
+          <rect x="64" y="38" width="8" height="8"/><rect x="76" y="50" width="8" height="8"/><rect x="86" y="40" width="8" height="8"/>
+          <rect x="40" y="70" width="8" height="8"/><rect x="52" y="80" width="8" height="8"/><rect x="66" y="74" width="8" height="8"/><rect x="80" y="84" width="8" height="8"/>
+        </g>
+      </g>
+      <rect x="148" y="60" width="148" height="32" rx="9" fill="#0d1322" stroke="#2c3a5c"/>
+      <text x="160" y="81" font-family="ui-monospace,Menlo,monospace" font-size="13" fill="#7ea4ff">192.168.x.x:8420</text>
+      <rect x="148" y="102" width="148" height="56" rx="9" fill="#1d2a4a"/>
+      <text x="160" y="124" font-family="-apple-system,'PingFang SC',sans-serif" font-size="13" fill="#9db4e8">链接 token 随机生成</text>
+      <text x="160" y="146" font-family="-apple-system,'PingFang SC',sans-serif" font-size="13" fill="#9db4e8">仅局域网可达</text>
+    </g>
+
+    <!-- 手机(右下错位,加深层次) -->
+    <g transform="translate(920 128)">
+      <rect x="-6" y="-6" width="204" height="256" rx="26" fill="#0a0f1c" opacity=".55"/>
+      <rect width="192" height="244" rx="22" fill="url(#phoneScreen)"/>
+      <!-- 手机头部 -->
+      <rect width="192" height="64" rx="22" fill="#fff" opacity=".92"/>
+      <circle cx="26" cy="32" r="12" fill="url(#brand)"/>
+      <text x="44" y="28" font-family="-apple-system,'Segoe UI',sans-serif" font-size="13" font-weight="700" fill="#17203a">Pigeon</text>
+      <text x="44" y="45" font-family="ui-monospace,Menlo,monospace" font-size="9" fill="#8a93a8">192.168.x.x:8421</text>
+      <!-- 胶囊 tabs -->
+      <g font-family="-apple-system,'PingFang SC',sans-serif" font-size="11" text-anchor="middle">
+        <rect x="14" y="72" width="50" height="22" rx="11" fill="#eef2ff"/>
+        <text x="39" y="87" fill="#3b6ef3" font-weight="600">发送</text>
+        <text x="96" y="87" fill="#8a93a8">文件 (3)</text>
+        <text x="152" y="87" fill="#8a93a8">记录</text>
+      </g>
+      <!-- 文件行 -->
+      <g font-family="-apple-system,'PingFang SC',sans-serif">
+        <rect x="14" y="106" width="164" height="38" rx="10" fill="#fff"/>
+        <rect x="22" y="114" width="22" height="22" rx="6" fill="#eef2ff"/>
+        <text x="33" y="129" text-anchor="middle" font-size="7" font-weight="700" fill="#3b6ef3">PDF</text>
+        <text x="52" y="122" font-size="10" fill="#17203a">报告.pdf</text>
+        <text x="52" y="136" font-size="8" fill="#8a93a8">2.4 MB · 来自电脑</text>
+        <text x="168" y="130" text-anchor="end" font-size="9" font-weight="600" fill="#3b6ef3">下载</text>
+      </g>
+      <g font-family="-apple-system,'PingFang SC',sans-serif">
+        <rect x="14" y="150" width="164" height="38" rx="10" fill="#fff"/>
+        <rect x="22" y="158" width="22" height="22" rx="6" fill="#eef2ff"/>
+        <text x="33" y="173" text-anchor="middle" font-size="7" font-weight="700" fill="#3b6ef3">PNG</text>
+        <text x="52" y="166" font-size="10" fill="#17203a">截图.png</text>
+        <text x="52" y="180" font-size="8" fill="#8a93a8">860 KB · 来自手机</text>
+        <text x="168" y="174" text-anchor="end" font-size="9" font-weight="600" fill="#3b6ef3">下载</text>
+      </g>
+      <!-- 进度条行(上传中) -->
+      <g font-family="-apple-system,'PingFang SC',sans-serif">
+        <rect x="14" y="194" width="164" height="38" rx="10" fill="#fff"/>
+        <rect x="22" y="202" width="22" height="22" rx="6" fill="#eef2ff"/>
+        <text x="33" y="217" text-anchor="middle" font-size="7" font-weight="700" fill="#3b6ef3">MP4</text>
+        <text x="52" y="210" font-size="10" fill="#17203a">视频.mp4</text>
+        <rect x="52" y="222" width="104" height="5" rx="2.5" fill="#eef2ff"/>
+        <rect x="52" y="222" width="72" height="5" rx="2.5" fill="#3b6ef3"/>
+        <text x="168" y="224" text-anchor="end" font-size="9" fill="#3b6ef3" font-weight="600">68%</text>
+      </g>
+    </g>
+  </g>
+</svg>
