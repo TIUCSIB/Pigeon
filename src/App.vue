@@ -2344,19 +2344,46 @@ li:has(.check.on) .row-main {
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  line-height: 1;
+  line-height: 15px;
   color: var(--text-2);
   cursor: pointer;
   user-select: none;
 }
+/* 自绘复选框:原生控件内部绘制不跟盒中心,自绘保证与文字严格对齐 */
 .check-label input {
-  accent-color: var(--accent);
-  width: 14px;
-  height: 14px;
-  /* 原生 checkbox 默认有 margin 且参与基线计算,清零才能与文字垂直居中 */
+  appearance: none;
+  -webkit-appearance: none;
+  width: 15px;
+  height: 15px;
   margin: 0;
   flex: none;
+  border: 1.5px solid var(--border);
+  border-radius: 4.5px;
+  background: var(--card);
   cursor: pointer;
+  position: relative;
+  box-sizing: border-box;
+  transition:
+    background 0.12s,
+    border-color 0.12s;
+}
+.check-label input:hover {
+  border-color: var(--accent);
+}
+.check-label input:checked {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.check-label input:checked::after {
+  content: '';
+  position: absolute;
+  left: 4px;
+  top: 1px;
+  width: 4px;
+  height: 7.5px;
+  border: solid #fff;
+  border-width: 0 1.5px 1.5px 0;
+  transform: rotate(45deg);
 }
 .perm-row .sq-btn {
   margin-left: auto;
