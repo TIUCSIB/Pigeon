@@ -1,11 +1,14 @@
 //! Windows 窗口外观:无边框窗口的 DWM 圆角、画布色边框。
 //!
-//! `decorations:false` + `shadow:true` 时,tao 为了给 DWM 阴影留位置,会在窗口里
-//! 留一圈原生非客户区(左右/下 = SM_CXSIZEFRAME + SM_CXPADDEDBORDER,顶部约
-//! 1~2px,见 tao 的 calculate_insets_for_dpi),WebView 只铺客户区。这圈区域由
-//! 系统按"浅色窗口边框"绘制成白色,不受应用主题影响,所以暗色下会看到一圈白边。
-//! DWMWA_BORDER_COLOR 只改最外 1px,DWMWA_CAPTION_COLOR 只改顶部标题区,都盖不住它。
-//! 这里用 WM_NCPAINT 子类化把这圈非客户区直接涂成画布色。
+//! `decorations:false` + `shadow:true` 时,tao 为了给 DWM 阴影留位置,会在 WM_NCCALCSIZE
+//! 里给窗口留一圈原生非客户区(左右/下 = SM_CXSIZEFRAME + SM_CXPADDEDBORDER,顶部约
+//! 1~2px),WebView 只铺客户区。这圈区域由系统按"浅色窗口边框"绘制,不受应用主题影响,
+//! 涂成画布色后,模态遮罩等 HTML 覆盖层依然盖不到它——四周会露出一条画布色的浅边。
+//!
+//! 处理:子类化窗口拦截 WM_NCCALCSIZE,让客户区占满整个窗口,WebView 铺满后
+//! 遮罩/蒙层即可盖到窗口边缘。DWM 阴影与圆角不依赖可见非客户区,不受影响;
+//! 窗口 resizable:false,也无需保留调整大小的边框热区。
+//! WM_NCPAINT 分支保留兜底(此时四条边尺寸为 0,实际不再绘制)。
 
 #![cfg(windows)]
 
@@ -22,7 +25,7 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, WM_NCACTIVATE, WM_NCPAINT, WM_SHOWWINDOW,
+    GetClientRect, GetWindowRect, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_SHOWWINDOW,
 };
 
 /// 非客户区填充色(COLORREF 0x00BBGGRR),跟随画布色
@@ -86,6 +89,15 @@ unsafe extern "system" fn nc_paint(
     _id: usize,
     _data: usize,
 ) -> LRESULT {
+    if msg == WM_NCCALCSIZE {
+        // wparam=1 时 lparam 指向"调整后的客户区"矩形,默认实现会把窗口
+        // 缩小一圈留出非客户区。直接返回 WPARAM(0) 不做任何裁剪,
+        // 客户区 = 整个窗口,WebView 铺满,遮罩能盖到边缘。
+        if wparam.0 != 0 {
+            return LRESULT(0);
+        }
+        return DefSubclassProc(hwnd, msg, wparam, lparam);
+    }
     if msg == WM_SHOWWINDOW || msg == WM_NCACTIVATE {
         let result = DefSubclassProc(hwnd, msg, wparam, lparam);
         let _ = RedrawWindow(
