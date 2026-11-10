@@ -23,6 +23,7 @@ percent-encoding = "2"
 base64 = "0.22"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 tower-http = { version = "0.6", features = ["cors"] }
+sha2 = "0.10"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62", features = [

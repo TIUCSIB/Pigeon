@@ -19,6 +19,26 @@ use crate::clips::{Clip, ClipsState};
 use crate::files::{file_entries, reveal_in_explorer, FileEntry, FilesState};
 
 const TOKEN_LEN: usize = 12;
+const SESSION_COOKIE: &str = "pigeon_session";
+const SESSION_LEN: usize = 32;
+
+/// 权限种类
+#[derive(Clone, Copy)]
+pub enum Perm {
+    Download,
+    UploadFile,
+    UploadText,
+}
+
+impl Perm {
+    fn label(&self) -> &'static str {
+        match self {
+            Perm::Download => "下载",
+            Perm::UploadFile => "上传文件",
+            Perm::UploadText => "上传文本",
+        }
+    }
+}
 
 /// 程序级共享状态
 pub struct AppState {
@@ -29,6 +49,18 @@ pub struct AppState {
     pub token: String,
     /// 分享开关:关闭后手机端所有路由返回 403
     pub sharing: std::sync::atomic::AtomicBool,
+    /// URL 是否携带随机 token
+    pub token_enabled: std::sync::atomic::AtomicBool,
+    /// 账号认证开关
+    pub auth_enabled: std::sync::atomic::AtomicBool,
+    /// 会话表:session token -> 用户名(内存,重启失效)
+    pub sessions: std::sync::Mutex<std::collections::HashMap<String, String>>,
+    /// 账号表
+    pub accounts: Arc<crate::accounts::AccountsState>,
+    /// 上传并发排队
+    pub upload_sem: Arc<tokio::sync::Semaphore>,
+    /// 全局上传限速(字节/秒,0 = 不限)
+    pub speed_limit_bps: std::sync::atomic::AtomicU64,
 }
 
 impl AppState {
@@ -38,6 +70,11 @@ impl AppState {
         host: String,
         port: u16,
         sharing: bool,
+        accounts: Arc<crate::accounts::AccountsState>,
+        token_enabled: bool,
+        auth_enabled: bool,
+        max_concurrent_uploads: u32,
+        speed_limit_mbps: u32,
     ) -> Self {
         Self {
             files,
@@ -45,6 +82,16 @@ impl AppState {
             host,
             port,
             sharing: std::sync::atomic::AtomicBool::new(sharing),
+            token_enabled: std::sync::atomic::AtomicBool::new(token_enabled),
+            auth_enabled: std::sync::atomic::AtomicBool::new(auth_enabled),
+            sessions: std::sync::Mutex::new(std::collections::HashMap::new()),
+            accounts,
+            upload_sem: Arc::new(tokio::sync::Semaphore::new(
+                max_concurrent_uploads.clamp(1, 8) as usize,
+            )),
+            speed_limit_bps: std::sync::atomic::AtomicU64::new(
+                speed_limit_mbps as u64 * 1024 * 1024,
+            ),
             token: Alphanumeric.sample_string(&mut rand::rng(), TOKEN_LEN),
         }
     }
@@ -57,13 +104,91 @@ impl AppState {
         self.sharing.store(on, std::sync::atomic::Ordering::SeqCst);
     }
 
+    pub fn is_token_enabled(&self) -> bool {
+        self.token_enabled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    pub fn is_auth_enabled(&self) -> bool {
+        self.auth_enabled.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     pub fn url(&self) -> String {
-        format!("http://{}/s/{}", self.host_with_port(), self.token)
+        if self.is_token_enabled() {
+            format!("http://{}/s/{}", self.host_with_port(), self.token)
+        } else {
+            format!("http://{}/", self.host_with_port())
+        }
     }
 
     fn host_with_port(&self) -> String {
         // 纯 IP,不需要 IPv6 括号处理之外的逻辑
         format!("{}:{}", self.host, self.port)
+    }
+
+    /// 从 Cookie 解析会话,返回用户名
+    fn session_user(&self, headers: &axum::http::HeaderMap) -> Option<String> {
+        let cookie = headers.get(header::COOKIE)?.to_str().ok()?;
+        let token = cookie
+            .split(';')
+            .find_map(|c| c.trim().strip_prefix(&format!("{SESSION_COOKIE}=")))?
+            .trim();
+        if token.is_empty() {
+            return None;
+        }
+        self.sessions.lock().unwrap().get(token).cloned()
+    }
+
+    /// 取当前会话对应的账号(未登录/会话失效返回 None)
+    fn session_account(&self, headers: &axum::http::HeaderMap) -> Option<crate::accounts::Account> {
+        let username = self.session_user(headers)?;
+        self.accounts.list_raw().into_iter().find(|a| a.username == username)
+    }
+
+    /// 权限校验:认证关闭时放行;开启时 401 未登录 / 403 无权限
+    fn require_perm(
+        &self,
+        headers: &axum::http::HeaderMap,
+        perm: Perm,
+    ) -> Result<crate::accounts::Account, Response> {
+        if !self.is_auth_enabled() {
+            // 认证关闭:返回哑账号,不参与后续判断
+            return Ok(crate::accounts::Account {
+                username: String::new(),
+                salt: String::new(),
+                hash: String::new(),
+                allow_download: true,
+                allow_upload_file: true,
+                allow_upload_text: true,
+            });
+        }
+        let account = self
+            .session_account(headers)
+            .ok_or_else(|| (StatusCode::UNAUTHORIZED, "未登录").into_response())?;
+        let ok = match perm {
+            Perm::Download => account.allow_download,
+            Perm::UploadFile => account.allow_upload_file,
+            Perm::UploadText => account.allow_upload_text,
+        };
+        if !ok {
+            return Err((
+                StatusCode::FORBIDDEN,
+                format!("没有{}权限", perm.label()),
+            )
+                .into_response());
+        }
+        Ok(account)
+    }
+
+    /// 全局限速(字节/秒)
+    pub fn speed_limit(&self) -> u64 {
+        self.speed_limit_bps.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_speed_limit(&self, mbps: u32) {
+        self.speed_limit_bps.store(
+            mbps as u64 * 1024 * 1024,
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 }
 
@@ -93,6 +218,53 @@ fn router(app: AppHandle, state: SharedState) -> Router {
     let p = format!("/s/{}", state.token);
     // 分享开关守卫用的状态克隆(with_state 会 move 走 state)
     let guard_state = state.clone();
+
+    // token 开关关闭时,同一套处理器挂在根路径直接访问;
+    // 每条根路由都带 token 守卫,开关打开时根路径一律 403
+    let token_guard = {
+        let guard = guard_state.clone();
+        axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let guard = guard.clone();
+                async move {
+                    if guard.is_token_enabled() {
+                        (
+                            StatusCode::FORBIDDEN,
+                            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                            "此地址已停用,请使用带 token 的完整链接",
+                        )
+                            .into_response()
+                    } else {
+                        next.run(req).await
+                    }
+                }
+            },
+        )
+    };
+
+    let root_token_guard = token_guard.clone();
+
+    let sharing_guard = {
+        let guard = guard_state.clone();
+        axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let guard = guard.clone();
+                async move {
+                    if guard.is_sharing() {
+                        next.run(req).await
+                    } else {
+                        (
+                            StatusCode::FORBIDDEN,
+                            [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
+                            "Pigeon 分享已关闭",
+                        )
+                            .into_response()
+                    }
+                }
+            },
+        )
+    };
+
     Router::new()
         .route(&p, get(redirect_to_slash))
         .route(&format!("{p}/"), get(mobile_home))
@@ -107,6 +279,42 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         .route(&format!("{p}/api/files"), get(api_list_files))
         .route(&format!("{p}/api/clips"), get(api_list_clips).post(api_add_clip))
         .route(&format!("{p}/file/{{name}}"), get(download))
+        // token 关闭时的根路径入口(每条路由带 token 守卫)
+        .route("/", get(mobile_home).layer(root_token_guard.clone()))
+        .route("/app.js", get(mobile_js).layer(root_token_guard.clone()))
+        .route("/style.css", get(mobile_css).layer(root_token_guard.clone()))
+        .route("/logo.png", get(mobile_logo).layer(root_token_guard.clone()))
+        .route("/api/events", get(sse_events).layer(root_token_guard.clone()))
+        .route(
+            "/api/upload",
+            post(upload)
+                .layer(DefaultBodyLimit::disable())
+                .layer(root_token_guard.clone()),
+        )
+        .route("/api/files", get(api_list_files).layer(root_token_guard.clone()))
+        .route(
+            "/api/clips",
+            get(api_list_clips)
+                .post(api_add_clip)
+                .layer(root_token_guard.clone()),
+        )
+        .route("/file/{name}", get(download).layer(root_token_guard))
+        // 登录接口:两条路径都开放,不受 token/认证守卫限制
+        .route("/api/login", post(api_login).layer(sharing_guard.clone()))
+        .route(
+            &format!("{p}/api/login"),
+            post(api_login).layer(sharing_guard.clone()),
+        )
+        .route("/api/me", get(api_me).layer(sharing_guard.clone()))
+        .route(
+            &format!("{p}/api/me"),
+            get(api_me).layer(sharing_guard.clone()),
+        )
+        .route("/api/logout", post(api_logout).layer(sharing_guard.clone()))
+        .route(
+            &format!("{p}/api/logout"),
+            post(api_logout).layer(sharing_guard.clone()),
+        )
         .fallback(not_found)
         .with_state(state)
         // 桌面 UI(dev 时在 localhost:5176)fetch 本服务属于跨域,放行任意来源
@@ -115,26 +323,7 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         // app handle 供 upload 发事件用
         .layer(axum::Extension(app))
         // 分享开关守卫:关闭时手机端所有请求返回 403
-        .layer({
-            let guard = guard_state;
-            axum::middleware::from_fn(
-                move |req: axum::extract::Request, next: axum::middleware::Next| {
-                    let guard = guard.clone();
-                    async move {
-                        if guard.is_sharing() {
-                            next.run(req).await
-                        } else {
-                            (
-                                StatusCode::FORBIDDEN,
-                                [(axum::http::header::CONTENT_TYPE, "text/plain; charset=utf-8")],
-                                "Pigeon 分享已关闭",
-                            )
-                                .into_response()
-                        }
-                    }
-                },
-            )
-        })
+        .layer(sharing_guard)
 }
 
 /// /s/{token} -> /s/{token}/ :补斜杠让页面里的相对路径解析到 token 前缀下
@@ -192,7 +381,11 @@ async fn mobile_logo() -> Response {
 /// SSE:文件列表或文字记录任一变动时推送,手机端收到后刷新
 async fn sse_events(
     State(state): State<SharedState>,
-) -> Sse<impl tokio_stream::Stream<Item = Result<Event, std::convert::Infallible>>> {
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::Download) {
+        return resp;
+    }
     let files_v = state.files.version_rx();
     let clips_v = state.clips.version_rx();
     let stream = tokio_stream::StreamExt::merge(
@@ -206,23 +399,41 @@ async fn sse_events(
                 .data(json!({ "kind": kind, "v": v }).to_string()),
         )
     });
-    Sse::new(stream).keep_alive(KeepAlive::default())
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
 }
 
-async fn api_list_files(State(state): State<SharedState>) -> Json<Vec<FileEntry>> {
-    Json(file_entries(&state.files.dir()))
+async fn api_list_files(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::Download) {
+        return resp;
+    }
+    Json(file_entries(&state.files.dir())).into_response()
 }
 
-async fn api_list_clips(State(state): State<SharedState>) -> Json<Vec<Clip>> {
-    Json(state.clips.list())
+async fn api_list_clips(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::Download) {
+        return resp;
+    }
+    Json(state.clips.list()).into_response()
 }
 
 /// 手机端发送文字:入库 + 推给桌面端 + 写进桌面剪贴板
 async fn api_add_clip(
     axum::Extension(app): axum::Extension<AppHandle>,
     State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
     Json(payload): Json<serde_json::Value>,
 ) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::UploadText) {
+        return resp;
+    }
     let Some(content) = payload["content"].as_str() else {
         return (StatusCode::BAD_REQUEST, "missing content").into_response();
     };
@@ -253,9 +464,22 @@ async fn api_add_clip(
 async fn upload(
     axum::Extension(app): axum::Extension<AppHandle>,
     State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
     use tokio::io::AsyncWriteExt;
+
+    if let Err(resp) = state.require_perm(&headers, Perm::UploadFile) {
+        return resp;
+    }
+    // 并发排队:超过上限的请求在此等待(队列)
+    let _permit = match state.upload_sem.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, "服务繁忙").into_response(),
+    };
+    // 限速(字节/秒,0 = 不限)
+    let limit_bps = state.speed_limit();
+    let started = std::time::Instant::now();
 
     let mut saved: Vec<(String, u64)> = Vec::new();
     while let Ok(Some(mut field)) = multipart.next_field().await {
@@ -289,6 +513,15 @@ async fn upload(
                         break;
                     }
                     written += chunk.len() as u64;
+                    // 限速:按"应耗时间"与实际耗时之差节流
+                    if limit_bps > 0 {
+                        let expected =
+                            std::time::Duration::from_secs_f64(written as f64 / limit_bps as f64);
+                        let elapsed = started.elapsed();
+                        if expected > elapsed {
+                            tokio::time::sleep(expected - elapsed).await;
+                        }
+                    }
                 }
                 if failed.is_none() {
                     if let Err(e) = file.flush().await {
@@ -330,6 +563,9 @@ async fn download(
     headers: axum::http::HeaderMap,
     AxumPath(name): AxumPath<String>,
 ) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::Download) {
+        return resp;
+    }
     const CD_SET: &percent_encoding::AsciiSet = &percent_encoding::NON_ALPHANUMERIC
         .remove(b'-')
         .remove(b'.')
@@ -435,6 +671,107 @@ fn parse_range(v: Option<&str>, total: u64) -> Option<(u64, u64, bool)> {
     Some((start, end.max(start), true))
 }
 
+// ---------- 手机端登录(账号认证开启时) ----------
+
+/// 登录:校验账号密码,签发会话 cookie
+async fn api_login(
+    State(state): State<SharedState>,
+    Json(payload): Json<serde_json::Value>,
+) -> Response {
+    // 未开启认证时直接放行(前端不会调用)
+    if !state.is_auth_enabled() {
+        return Json(json!({ "ok": true })).into_response();
+    }
+    let username = payload["username"].as_str().unwrap_or("").trim().to_string();
+    let password = payload["password"].as_str().unwrap_or("").to_string();
+    let Some(account) = state.accounts.verify(&username, &password) else {
+        return (StatusCode::UNAUTHORIZED, "用户名或密码错误").into_response();
+    };
+    let session = Alphanumeric.sample_string(&mut rand::rng(), SESSION_LEN);
+    state
+        .sessions
+        .lock()
+        .unwrap()
+        .insert(session.clone(), username);
+    // 会话上限保护:异常堆积时清最旧的(HashMap 无序,直接清一半)
+    {
+        let mut sessions = state.sessions.lock().unwrap();
+        if sessions.len() > 500 {
+            let keys: Vec<String> = sessions.keys().take(250).cloned().collect();
+            for k in keys {
+                sessions.remove(&k);
+            }
+        }
+    }
+    (
+        [
+            (
+                header::SET_COOKIE,
+                format!(
+                    "{SESSION_COOKIE}={session}; Path=/; HttpOnly; Max-Age=604800; SameSite=Lax"
+                ),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Json(json!({
+            "ok": true,
+            "username": account.username,
+            "perms": {
+                "download": account.allow_download,
+                "upload_file": account.allow_upload_file,
+                "upload_text": account.allow_upload_text,
+            }
+        })),
+    )
+        .into_response()
+}
+
+/// 会话状态:前端据此决定显示登录框还是内容
+async fn api_me(State(state): State<SharedState>, headers: axum::http::HeaderMap) -> Response {
+    if !state.is_auth_enabled() {
+        return Json(json!({ "ok": true, "auth": false })).into_response();
+    }
+    match state.session_account(&headers) {
+        Some(a) => Json(json!({
+            "ok": true,
+            "auth": true,
+            "username": a.username,
+            "perms": {
+                "download": a.allow_download,
+                "upload_file": a.allow_upload_file,
+                "upload_text": a.allow_upload_text,
+            }
+        }))
+        .into_response(),
+        None => (StatusCode::UNAUTHORIZED, "未登录").into_response(),
+    }
+}
+
+/// 退出登录:销毁会话 + 清 cookie
+async fn api_logout(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(user) = state.session_user(&headers) {
+        state
+            .sessions
+            .lock()
+            .unwrap()
+            .retain(|_, v| v != &user);
+    }
+    (
+        [
+            (
+                header::SET_COOKIE,
+                format!("{SESSION_COOKIE}=; Path=/; HttpOnly; Max-Age=0"),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Json(json!({ "ok": true })),
+    )
+        .into_response()
+}
+
 // ---------- Tauri 命令(桌面 UI 调用) ----------
 
 #[tauri::command]
@@ -446,6 +783,9 @@ pub fn server_info(state: tauri::State<'_, crate::AppServer>) -> serde_json::Val
         "port": s.port,
         "token": s.token,
         "inbox_dir": s.files.dir().to_string_lossy(),
+        "token_enabled": s.is_token_enabled(),
+        "auth_enabled": s.is_auth_enabled(),
+        "sharing": s.is_sharing(),
     })
 }
 
@@ -747,6 +1087,96 @@ pub fn open_firewall_settings() -> Result<(), String> {
     Err("仅支持 Windows".into())
 }
 
+/// 切换 URL token 开关并持久化
+#[tauri::command]
+pub fn toggle_token(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppServer>,
+    on: bool,
+) -> Result<(), String> {
+    state.shared.token_enabled.store(
+        on,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    let mut settings = crate::settings::Settings::load();
+    settings.token_enabled = on;
+    settings.save()?;
+    let _ = app.emit("token-changed", on);
+    Ok(())
+}
+
+/// 切换账号认证开关并持久化;开启前提是至少有一个账号
+#[tauri::command]
+pub fn toggle_auth(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppServer>,
+    on: bool,
+) -> Result<(), String> {
+    if on && state.accounts.count() == 0 {
+        return Err("请先添加至少一个账号".into());
+    }
+    state.shared.auth_enabled.store(
+        on,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    // 关闭认证时清空所有会话
+    if !on {
+        state.shared.sessions.lock().unwrap().clear();
+    }
+    let mut settings = crate::settings::Settings::load();
+    settings.auth_enabled = on;
+    settings.save()?;
+    let _ = app.emit("auth-changed", on);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_accounts(state: tauri::State<'_, crate::AppServer>) -> Vec<crate::accounts::AccountView> {
+    state.accounts.list()
+}
+
+#[tauri::command]
+pub fn add_account(
+    state: tauri::State<'_, crate::AppServer>,
+    username: String,
+    password: String,
+    allowDownload: bool,
+    allowUploadFile: bool,
+    allowUploadText: bool,
+) -> Result<(), String> {
+    state
+        .accounts
+        .add(&username, &password, allowDownload, allowUploadFile, allowUploadText)
+}
+
+#[tauri::command]
+pub fn remove_account(
+    app: AppHandle,
+    state: tauri::State<'_, crate::AppServer>,
+    username: String,
+) -> Result<(), String> {
+    state.accounts.remove(&username)?;
+    // 该账号的会话全部失效
+    state
+        .shared
+        .sessions
+        .lock()
+        .unwrap()
+        .retain(|_, v| v != &username);
+    // 最后一个账号被删且认证开着 → 自动关认证
+    if state.accounts.count() == 0 && state.shared.is_auth_enabled() {
+        state.shared.auth_enabled.store(
+            false,
+            std::sync::atomic::Ordering::SeqCst,
+        );
+        let mut settings = crate::settings::Settings::load();
+        settings.auth_enabled = false;
+        settings.save()?;
+        let _ = app.emit("auth-changed", false);
+    }
+    Ok(())
+}
+
 /// 读取设置(桌面 UI)
 #[tauri::command]
 pub fn get_settings() -> crate::settings::Settings {
@@ -760,16 +1190,30 @@ pub async fn save_settings(
     port: u16,
     inbox_dir: Option<String>,
     dark_mode: Option<bool>,
+    max_concurrent_uploads: Option<u32>,
+    speed_limit_mbps: Option<u32>,
 ) -> Result<(), String> {
     // 目录为空字符串时回落默认值
     let inbox_dir = inbox_dir.filter(|s| !s.trim().is_empty());
+    let max_cc = max_concurrent_uploads.unwrap_or(
+        crate::settings::Settings::load().max_concurrent_uploads,
+    );
+    let speed = speed_limit_mbps.unwrap_or(
+        crate::settings::Settings::load().speed_limit_mbps,
+    );
     let settings = crate::settings::Settings {
         port,
         inbox_dir,
         dark_mode: dark_mode.unwrap_or(false),
         sharing: state.shared.is_sharing(),
+        max_concurrent_uploads: max_cc.clamp(1, 8),
+        speed_limit_mbps: speed.min(1024),
+        ..crate::settings::Settings::load()
     };
     settings.save()?;
+
+    // 限速运行时立即生效;并发上限需重启(信号量容量固定)
+    state.shared.set_speed_limit(settings.speed_limit_mbps);
 
     // 目录立即切换;目录不存在则自动创建
     if let Some(d) = &settings.inbox_dir {
@@ -964,6 +1408,20 @@ const MOBILE_HTML: &str = r##"<!doctype html>
   </div>
 </main>
 <button id="to-top" class="hidden" aria-label="回到顶部">↑</button>
+<!-- 账号认证开启时的登录遮罩 -->
+<div id="login-mask" class="hidden">
+  <div class="login-card">
+    <div class="login-icon">
+      <svg viewBox="0 0 24 24" width="26" height="26"><path fill="#fff" d="M12 1a5 5 0 0 0-5 5v3H6a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2h-1V6a5 5 0 0 0-5-5zm-3 8V6a3 3 0 1 1 6 0v3H9z"/></svg>
+    </div>
+    <h2>需要登录</h2>
+    <p class="login-sub">此设备已开启访问认证</p>
+    <input id="login-user" placeholder="用户名" autocomplete="username">
+    <input id="login-pass" type="password" placeholder="密码" autocomplete="current-password">
+    <button id="login-btn" class="send-btn">登录</button>
+    <p id="login-err" class="hidden">用户名或密码错误</p>
+  </div>
+</div>
 <div id="toast" class="hidden"></div>
 <script src="app.js"></script>
 </body>
@@ -1063,6 +1521,35 @@ li .bar i { display: block; height: 100%; background: #3b6ef3; border-radius: 99
 li.done .fmeta { color: #22a06b; }
 .hidden { display: none !important; }
 #empty { text-align: center; color: #8a93a8; font-size: 13px; padding: 16px 0; }
+
+/* 登录遮罩 */
+#login-mask {
+  position: fixed; inset: 0; z-index: 100;
+  background: #f4f6fa;
+  display: flex; align-items: center; justify-content: center;
+  padding: 24px;
+}
+.login-card {
+  width: 100%; max-width: 320px;
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+}
+.login-icon {
+  width: 52px; height: 52px; border-radius: 15px;
+  background: linear-gradient(135deg, #4a7cff, #3b5fe0);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 4px;
+}
+.login-card h2 { font-size: 17px; }
+.login-sub { font-size: 12px; color: #8a93a8; margin-bottom: 8px; }
+.login-card input {
+  width: 100%; height: 44px; border: 1.5px solid #e3e8f2; border-radius: 12px;
+  padding: 0 14px; font-size: 14px; font-family: inherit;
+  background: #fff; box-sizing: border-box; -webkit-appearance: none;
+}
+.login-card input:focus { outline: none; border-color: #3b6ef3; }
+.login-card .send-btn { margin-top: 4px; }
+#login-err { font-size: 12px; color: #e5484d; }
+
 #toast {
   position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: #17203a; color: #fff; font-size: 13px;
@@ -1186,7 +1673,10 @@ const MOBILE_JS: &str = r##"(function () {
 
   function loadFiles() {
     fetch(base + 'api/files')
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('auth'); }
+        return r.json();
+      })
       .then(renderFiles)
       .catch(function () {});
   }
@@ -1236,23 +1726,86 @@ const MOBILE_JS: &str = r##"(function () {
 
   function loadClips() {
     fetch(base + 'api/clips')
-      .then(function (r) { return r.json(); })
+      .then(function (r) {
+        if (r.status === 401) { showLogin(); throw new Error('auth'); }
+        return r.json();
+      })
       .then(renderClips)
       .catch(function () {});
   }
 
-  // SSE:桌面共享目录变动时刷新
-  try {
-    var es = new EventSource(base + 'api/events');
-    es.addEventListener('sync', function (ev) {
-      var kind = null;
-      try { kind = JSON.parse(ev.data).kind; } catch (e) {}
-      loadFiles();
-      loadClips();
-      // 电脑发来新文字且页面在后台时,标题闪烁提醒;回来看一眼即恢复
-      if (kind === 'clips' && document.hidden) startTitleFlash();
+  // ---- 账号登录 ----
+  function showLogin() {
+    $('login-mask').classList.remove('hidden');
+    setTimeout(function () { try { $('login-user').focus(); } catch (e) {} }, 50);
+  }
+  function hideLogin() {
+    $('login-mask').classList.add('hidden');
+  }
+  function bootstrap() {
+    fetch(base + 'api/me')
+      .then(function (r) { return r.json().catch(function () { return {}; }); })
+      .then(function (me) {
+        if (me && me.ok) {
+          hideLogin();
+          loadFiles();
+          loadClips();
+        } else {
+          showLogin();
+        }
+      })
+      .catch(function () { showLogin(); });
+  }
+  $('login-btn').addEventListener('click', function () {
+    var u = $('login-user').value.trim();
+    var p = $('login-pass').value;
+    if (!u || !p) { $('login-err').textContent = '请输入用户名和密码'; $('login-err').classList.remove('hidden'); return; }
+    $('login-btn').disabled = true;
+    $('login-btn').textContent = '登录中…';
+    fetch(base + 'api/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username: u, password: p })
+    }).then(function (r) {
+      if (r.ok) {
+        $('login-err').classList.add('hidden');
+        $('login-pass').value = '';
+        hideLogin();
+        loadFiles();
+        loadClips();
+      } else {
+        $('login-err').textContent = '用户名或密码错误';
+        $('login-err').classList.remove('hidden');
+      }
+    }).catch(function () {
+      $('login-err').textContent = '网络错误,请重试';
+      $('login-err').classList.remove('hidden');
+    }).then(function () {
+      $('login-btn').disabled = false;
+      $('login-btn').textContent = '登录';
     });
-  } catch (e) { /* 老浏览器轮询兜底 */ }
+  });
+  $('login-pass').addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') $('login-btn').click();
+  });
+
+  // SSE:桌面共享目录变动时刷新(登录成功后启动)
+  var sseStarted = false;
+  function startSse() {
+    if (sseStarted) return;
+    sseStarted = true;
+    try {
+      var es = new EventSource(base + 'api/events');
+      es.addEventListener('sync', function (ev) {
+        var kind = null;
+        try { kind = JSON.parse(ev.data).kind; } catch (e) {}
+        loadFiles();
+        loadClips();
+        // 电脑发来新文字且页面在后台时,标题闪烁提醒;回来看一眼即恢复
+        if (kind === 'clips' && document.hidden) startTitleFlash();
+      });
+    } catch (e) { /* 老浏览器轮询兜底 */ }
+  }
 
   // 标题闪烁提醒
   var flashTimer = null;
@@ -1411,7 +1964,6 @@ const MOBILE_JS: &str = r##"(function () {
 
   // 发送完成自动跳到文件 Tab 便于确认?不必,保留在原页
 
-  loadFiles();
-  loadClips();
+  bootstrap();
 })();
 "##;

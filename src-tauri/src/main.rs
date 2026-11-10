@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod accounts;
 mod clips;
 mod files;
 mod server;
@@ -16,6 +17,7 @@ use tauri::Manager;
 /// Tauri manage 的状态,包一层方便命令取用
 pub struct AppServer {
     pub shared: Arc<server::AppState>,
+    pub accounts: Arc<accounts::AccountsState>,
 }
 
 fn main() {
@@ -46,6 +48,11 @@ fn main() {
             server::pick_inbox_dir,
             server::set_theme,
             server::open_firewall_settings,
+            server::toggle_token,
+            server::toggle_auth,
+            server::list_accounts,
+            server::add_account,
+            server::remove_account,
         ])
         .setup(|app| {
             // 1. 用户设置(端口、共享目录)
@@ -71,6 +78,7 @@ fn main() {
             // 文字记录等持久化文件放 ~/Pigeon 下
             let pigeon_dir = settings::pigeon_dir();
             let clips = clips::ClipsState::load(pigeon_dir.join("clips.json"));
+            let accounts = Arc::new(accounts::AccountsState::load());
 
             let shared = Arc::new(server::AppState::new(
                 files::FilesState::new(inbox),
@@ -78,11 +86,19 @@ fn main() {
                 host,
                 port,
                 settings.sharing,
+                accounts.clone(),
+                settings.token_enabled,
+                settings.auth_enabled,
+                settings.max_concurrent_uploads,
+                settings.speed_limit_mbps,
             ));
             eprintln!("[pigeon] serving at {}", shared.url());
             // 把连接地址落到文件里,方便排查和找回(内容含 token,仅本机使用)
             let _ = std::fs::write(pigeon_dir.join("server-url.txt"), shared.url());
-            app.manage(AppServer { shared: shared.clone() });
+            app.manage(AppServer {
+                shared: shared.clone(),
+                accounts,
+            });
 
             // 恢复上次保存的窗口主题(含窗口底色,避免暗色下露白边)
             if settings.dark_mode {

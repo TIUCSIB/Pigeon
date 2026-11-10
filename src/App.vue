@@ -33,6 +33,17 @@ interface Settings {
   inbox_dir: string | null
   sharing?: boolean
   dark_mode?: boolean
+  token_enabled?: boolean
+  auth_enabled?: boolean
+  max_concurrent_uploads?: number
+  speed_limit_mbps?: number
+}
+
+interface AccountView {
+  username: string
+  allow_download: boolean
+  allow_upload_file: boolean
+  allow_upload_text: boolean
 }
 
 interface FrozenEntry {
@@ -182,10 +193,21 @@ const uploadUrl = ref('')
 const settingsPort = ref('')
 const settingsDir = ref('')
 const settingsLoaded = ref(false)
+const maxConcurrent = ref('')
+const speedLimit = ref('')
 // 暗黑模式(即时生效并持久化)
 const darkMode = ref(false)
 // 分享开关(绿点呼吸/红点)
 const sharing = ref(true)
+// 安全:token / 账号认证
+const tokenEnabled = ref(true)
+const authEnabled = ref(false)
+const accounts = ref<AccountView[]>([])
+const newAccUser = ref('')
+const newAccPass = ref('')
+const newAccDl = ref(true)
+const newAccUf = ref(true)
+const newAccUt = ref(true)
 // 冻结文件列表(多选模式或折叠面板展示)
 const frozen = ref<FrozenEntry[]>([])
 const showFrozen = ref(false)
@@ -588,9 +610,90 @@ async function loadSettings() {
     const s = await invoke<Settings>('get_settings')
     settingsPort.value = s.port === 0 ? '' : String(s.port)
     settingsDir.value = s.inbox_dir ?? ''
+    maxConcurrent.value = String(s.max_concurrent_uploads ?? 2)
+    speedLimit.value = String(s.speed_limit_mbps ?? 0)
     applyTheme(s.dark_mode === true)
     sharing.value = s.sharing !== false
+    tokenEnabled.value = s.token_enabled !== false
+    authEnabled.value = s.auth_enabled === true
     settingsLoaded.value = true
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function refreshAccounts() {
+  try {
+    accounts.value = await invoke<AccountView[]>('list_accounts')
+  } catch {
+    // ignore
+  }
+}
+
+async function refreshServerInfo() {
+  try {
+    info.value = await invoke<ServerInfo>('server_info')
+    qr.value = await QRCode.toDataURL(info.value.url, { width: 260, margin: 1 })
+  } catch {
+    // ignore
+  }
+}
+
+async function toggleToken() {
+  const next = !tokenEnabled.value
+  try {
+    await invoke('toggle_token', { on: next })
+    tokenEnabled.value = next
+    await refreshServerInfo()
+    toast(next ? '已启用链接 token' : '已关闭 token,局域网内任何人可直接访问')
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function toggleAuth() {
+  const next = !authEnabled.value
+  try {
+    await invoke('toggle_auth', { on: next })
+    authEnabled.value = next
+    toast(next ? '已开启账号认证,手机端需登录' : '已关闭账号认证')
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function addAccount() {
+  if (!newAccUser.value.trim() || !newAccPass.value) {
+    toast('用户名和密码不能为空')
+    return
+  }
+  try {
+    await invoke('add_account', {
+      username: newAccUser.value.trim(),
+      password: newAccPass.value,
+      allowDownload: newAccDl.value,
+      allowUploadFile: newAccUf.value,
+      allowUploadText: newAccUt.value,
+    })
+    newAccUser.value = ''
+    newAccPass.value = ''
+    newAccDl.value = true
+    newAccUf.value = true
+    newAccUt.value = true
+    await refreshAccounts()
+    toast('账号已添加')
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
+async function removeAccount(username: string) {
+  try {
+    await invoke('remove_account', { username })
+    await refreshAccounts()
+    // 最后一个账号删除后后端会自动关认证
+    await loadSettings()
+    toast(`已删除账号 ${username}`)
   } catch (e) {
     toast(`${e}`)
   }
@@ -626,6 +729,8 @@ async function persistSettings() {
     await invoke('save_settings', {
       port: port ? Number(port) : 0,
       inboxDir: settingsDir.value.trim() || null,
+      maxConcurrentUploads: Number(maxConcurrent.value) || 2,
+      speedLimitMbps: Number(speedLimit.value) || 0,
     })
     toast('设置已保存')
     await Promise.all([refreshFiles(), refreshClips()])
@@ -650,7 +755,13 @@ onMounted(async () => {
   } else {
     toast('服务启动失败,请查看控制台日志')
   }
-  await Promise.all([refreshFiles(), refreshClips(), loadSettings(), refreshFrozen()])
+  await Promise.all([
+    refreshFiles(),
+    refreshClips(),
+    loadSettings(),
+    refreshFrozen(),
+    refreshAccounts(),
+  ])
 
   unlisteners.push(
     await listen<boolean>('sharing-changed', (event) => {
@@ -1122,6 +1233,110 @@ onUnmounted(() => {
               <button class="sq-btn wide" @click="chooseDir">选择…</button>
             </div>
             <p class="sub">修改后立即生效,已分享的文件留在原目录</p>
+          </div>
+
+          <div class="hr"></div>
+
+          <div class="field">
+            <label>传输</label>
+            <div class="input-row">
+              <input
+                v-model="maxConcurrent"
+                class="input"
+                type="number"
+                min="1"
+                max="8"
+                placeholder="并发上限"
+                @input="onSettingInput"
+              />
+              <div class="input-unit">
+                <input
+                  v-model="speedLimit"
+                  class="input"
+                  type="number"
+                  min="0"
+                  placeholder="限速"
+                  @input="onSettingInput"
+                />
+                <span class="unit">MB/s</span>
+              </div>
+            </div>
+            <p class="sub">并发上传上限(1–8,重启生效) · 全局限速 0 = 不限,立即生效</p>
+          </div>
+
+          <div class="hr"></div>
+
+          <div class="field">
+            <label>安全</label>
+            <div class="opt-row compact">
+              <span class="opt-text">
+                <span class="opt-t">链接 token</span>
+                <span class="opt-s">
+                  链接中携带随机 token,不知道完整链接无法访问
+                </span>
+              </span>
+              <button
+                class="switch"
+                :class="{ on: tokenEnabled }"
+                role="switch"
+                :aria-checked="tokenEnabled"
+                @click="toggleToken"
+              >
+                <i class="knob"></i>
+              </button>
+            </div>
+            <div class="opt-row compact">
+              <span class="opt-text">
+                <span class="opt-t">账号认证</span>
+                <span class="opt-s">手机端需输入账号密码才能上传/下载</span>
+              </span>
+              <button
+                class="switch"
+                :class="{ on: authEnabled }"
+                role="switch"
+                :aria-checked="authEnabled"
+                @click="toggleAuth"
+              >
+                <i class="knob"></i>
+              </button>
+            </div>
+            <p v-if="!tokenEnabled" class="sub warn">
+              已关闭 token:局域网内任何人拿到 IP 即可访问,请确认网络可信
+            </p>
+          </div>
+
+          <div v-if="authEnabled || accounts.length" class="field">
+            <label>账号</label>
+            <ul class="acc-list">
+              <li v-for="a in accounts" :key="a.username">
+                <span class="acc-name">{{ a.username }}</span>
+                <span class="perm-chips">
+                  <span class="chip" :class="{ off: !a.allow_download }">下载</span>
+                  <span class="chip" :class="{ off: !a.allow_upload_file }">上传文件</span>
+                  <span class="chip" :class="{ off: !a.allow_upload_text }">上传文本</span>
+                </span>
+                <button class="op danger" title="删除账号" @click="removeAccount(a.username)">
+                  <svg viewBox="0 0 24 24">
+                    <path
+                      fill="currentColor"
+                      d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"
+                    />
+                  </svg>
+                </button>
+              </li>
+            </ul>
+            <div class="acc-form">
+              <div class="input-row">
+                <input v-model="newAccUser" class="input" placeholder="用户名" />
+                <input v-model="newAccPass" class="input" type="password" placeholder="密码" />
+              </div>
+              <div class="perm-row">
+                <label class="check-label"><input v-model="newAccDl" type="checkbox" /> 下载</label>
+                <label class="check-label"><input v-model="newAccUf" type="checkbox" /> 上传文件</label>
+                <label class="check-label"><input v-model="newAccUt" type="checkbox" /> 上传文本</label>
+                <button class="sq-btn wide" @click="addAccount">添加</button>
+              </div>
+            </div>
           </div>
 
           <p class="sub note">
@@ -1940,6 +2155,121 @@ li:has(.check.on) .row-main {
 }
 .help-list b {
   color: var(--text);
+}
+
+/* 账号管理 */
+.opt-row.compact {
+  padding: 9px 0;
+  gap: 10px;
+  border-bottom: 1px solid var(--border-row);
+}
+.opt-row.compact:last-of-type {
+  border-bottom: 0;
+  padding-bottom: 0;
+}
+.opt-row.compact .opt-t {
+  font-weight: 500;
+  font-size: 12.5px;
+}
+.opt-row.compact .opt-s {
+  font-size: 11.5px;
+}
+.warn {
+  color: #b7791f;
+  background: #fdf6e7;
+  border-radius: 8px;
+  padding: 8px 10px;
+  margin-top: 10px;
+}
+.page.dark .warn {
+  color: #e2b45c;
+  background: #2e2617;
+}
+.acc-list {
+  list-style: none;
+  margin: 0 0 10px;
+  padding: 0;
+}
+.acc-list li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-bottom: 1px solid var(--border-row);
+}
+.acc-list li:last-child {
+  border-bottom: 0;
+}
+.acc-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+}
+.perm-chips {
+  flex: 1;
+  display: flex;
+  gap: 5px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.chip {
+  font-size: 10.5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  white-space: nowrap;
+}
+.chip.off {
+  background: var(--chip-bg);
+  color: var(--text-4);
+  text-decoration: line-through;
+}
+.acc-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.perm-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.check-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--text-2);
+  cursor: pointer;
+  user-select: none;
+}
+.check-label input {
+  accent-color: var(--accent);
+  width: 14px;
+  height: 14px;
+  cursor: pointer;
+}
+.perm-row .sq-btn {
+  margin-left: auto;
+  height: 34px;
+}
+.input-unit {
+  position: relative;
+  flex: 0 0 130px;
+}
+.input-unit .input {
+  padding-right: 48px;
+}
+.input-unit .unit {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: 11px;
+  color: var(--text-4);
+  pointer-events: none;
 }
 
 /* 已冻结(取消分享)折叠面板 */

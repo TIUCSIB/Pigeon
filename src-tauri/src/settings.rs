@@ -17,10 +17,26 @@ pub struct Settings {
     /// 分享服务开关(关闭后手机端所有请求返回 403)
     #[serde(default = "default_true")]
     pub sharing: bool,
+    /// URL 携带随机 token(关闭后局域网内任何人可直接访问)
+    #[serde(default = "default_true")]
+    pub token_enabled: bool,
+    /// 账号认证(开启后手机端需账号密码登录)
+    #[serde(default)]
+    pub auth_enabled: bool,
+    /// 上传并发排队上限(重启生效)
+    #[serde(default = "default_concurrency")]
+    pub max_concurrent_uploads: u32,
+    /// 全局上传限速 MB/s(0 = 不限,运行时生效)
+    #[serde(default)]
+    pub speed_limit_mbps: u32,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_concurrency() -> u32 {
+    2
 }
 
 impl Default for Settings {
@@ -30,6 +46,10 @@ impl Default for Settings {
             inbox_dir: None,
             dark_mode: false,
             sharing: true,
+            token_enabled: true,
+            auth_enabled: false,
+            max_concurrent_uploads: 2,
+            speed_limit_mbps: 0,
         }
     }
 }
