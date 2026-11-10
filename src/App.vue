@@ -2342,8 +2342,9 @@ li:has(.check.on) .row-main {
 .check-label {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
   font-size: 12px;
+  line-height: 1;
   color: var(--text-2);
   cursor: pointer;
   user-select: none;
@@ -2352,6 +2353,9 @@ li:has(.check.on) .row-main {
   accent-color: var(--accent);
   width: 14px;
   height: 14px;
+  /* 原生 checkbox 默认有 margin 且参与基线计算,清零才能与文字垂直居中 */
+  margin: 0;
+  flex: none;
   cursor: pointer;
 }
 .perm-row .sq-btn {
