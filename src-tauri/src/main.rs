@@ -45,6 +45,7 @@ fn main() {
             server::save_settings,
             server::pick_inbox_dir,
             server::set_theme,
+            server::open_firewall_settings,
         ])
         .setup(|app| {
             // 1. 用户设置(端口、共享目录)

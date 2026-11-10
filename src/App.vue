@@ -248,6 +248,17 @@ async function deleteFrozen(name: string) {
   }
 }
 
+// 连接排查
+const showHelp = ref(false)
+
+async function openFirewall() {
+  try {
+    await invoke('open_firewall_settings')
+  } catch (e) {
+    toast(`${e}`)
+  }
+}
+
 let toastSeq = 0
 const unlisteners: UnlistenFn[] = []
 
@@ -800,6 +811,21 @@ onUnmounted(() => {
               <p class="off-s">手机端无法访问,二维码与链接已失效</p>
               <button class="btn primary" @click="toggleSharing">开启分享</button>
             </div>
+          </div>
+
+          <!-- 连接排查助手 -->
+          <p class="sub" style="text-align: center; margin-top: 10px">
+            <button class="link" @click="showHelp = !showHelp">
+              {{ showHelp ? '收起排查步骤' : '手机连不上?查看排查步骤' }}
+            </button>
+          </p>
+          <div v-if="showHelp" class="help-card">
+            <ol class="help-list">
+              <li>确认手机和电脑连的是<b>同一个 Wi-Fi</b>(部分路由器开了 AP 隔离会互相不可见)</li>
+              <li>检查顶栏状态灯为绿色「分享中」</li>
+              <li>Windows 防火墙首次弹窗时需点过「允许」;没点过可在防火墙设置里放行 Pigeon</li>
+            </ol>
+            <button class="btn ghost" @click="openFirewall">打开防火墙设置</button>
           </div>
         </div>
 
@@ -1890,6 +1916,29 @@ li:has(.check.on) .row-main {
 }
 .sort-btn:hover {
   background: var(--hover);
+  color: var(--text);
+}
+
+/* 连接排查卡片 */
+.help-card {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+}
+.help-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12.5px;
+  color: var(--text-2);
+  line-height: 1.9;
+  user-select: text;
+}
+.help-list b {
   color: var(--text);
 }
 

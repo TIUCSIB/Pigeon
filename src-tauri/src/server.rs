@@ -725,6 +725,23 @@ pub async fn delete_frozen(name: String) -> Result<(), String> {
     Ok(())
 }
 
+/// 打开 Windows 防火墙设置(控制面板项)
+#[tauri::command]
+pub fn open_firewall_settings() -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", "firewall.cpl"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW,不闪黑框
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    Err("仅支持 Windows".into())
+}
+
 /// 读取设置(桌面 UI)
 #[tauri::command]
 pub fn get_settings() -> crate::settings::Settings {
@@ -1222,8 +1239,35 @@ const MOBILE_JS: &str = r##"(function () {
   // SSE:桌面共享目录变动时刷新
   try {
     var es = new EventSource(base + 'api/events');
-    es.addEventListener('sync', function () { loadFiles(); loadClips(); });
+    es.addEventListener('sync', function (ev) {
+      var kind = null;
+      try { kind = JSON.parse(ev.data).kind; } catch (e) {}
+      loadFiles();
+      loadClips();
+      // 电脑发来新文字且页面在后台时,标题闪烁提醒;回来看一眼即恢复
+      if (kind === 'clips' && document.hidden) startTitleFlash();
+    });
   } catch (e) { /* 老浏览器轮询兜底 */ }
+
+  // 标题闪烁提醒
+  var flashTimer = null;
+  function startTitleFlash() {
+    if (flashTimer) return;
+    var orig = document.title;
+    var flip = false;
+    flashTimer = setInterval(function () {
+      document.title = flip ? orig : '(新消息) ' + orig;
+      flip = !flip;
+    }, 900);
+    document.addEventListener('visibilitychange', function stop() {
+      if (!document.hidden) {
+        clearInterval(flashTimer);
+        flashTimer = null;
+        document.title = orig;
+        document.removeEventListener('visibilitychange', stop);
+      }
+    });
+  }
 
   // ---- 发送文字 ----
   var textIn = $('text-in'), sendBtn = $('send-text');
@@ -1293,20 +1337,40 @@ const MOBILE_JS: &str = r##"(function () {
     var it = items[i];
     var xhr = new XMLHttpRequest();
     xhr.open('POST', base + 'api/upload');
+    // 速度采样:每 500ms 用增量字节算一次,避免瞬时抖动
+    var lastLoaded = 0, lastTs = Date.now(), speedTimer = null;
+    function fmtSpeed(bps) {
+      if (bps >= 1048576) return (bps / 1048576).toFixed(1) + ' MB/s';
+      return Math.max(1, Math.round(bps / 1024)) + ' KB/s';
+    }
     xhr.upload.onprogress = function (e) {
-      if (e.lengthComputable) {
-        var p = Math.round(e.loaded / e.total * 100);
-        it.bar.style.width = p + '%';
-        it.pct.textContent = p + '%';
-      }
+      if (!e.lengthComputable) return;
+      var p = Math.round(e.loaded / e.total * 100);
+      it.bar.style.width = p + '%';
+      var now = Date.now();
+      var bps = (e.loaded - lastLoaded) * 1000 / Math.max(1, now - lastTs);
+      lastLoaded = e.loaded; lastTs = now;
+      var remain = e.total > e.loaded ? Math.ceil((e.total - e.loaded) / Math.max(1, bps)) : 0;
+      var eta = remain > 0 ? ' · 剩 ' + (remain >= 60 ? Math.ceil(remain / 60) + ' 分' : remain + ' 秒') : '';
+      it.pct.textContent = p + '% · ' + fmtSpeed(bps) + eta;
     };
+    // 进度间隙(卡住时)速度归零显示
+    speedTimer = setInterval(function () {
+      var now = Date.now();
+      if (now - lastTs > 1500 && lastLoaded > 0) {
+        var m = it.pct.textContent.match(/^(\d+)%/);
+        if (m) it.pct.textContent = m[1] + '% · 0 KB/s';
+      }
+    }, 2000);
     xhr.onload = function () {
+      clearInterval(speedTimer);
       it.li.classList.add('done');
       it.bar.style.width = '100%';
       it.pct.textContent = xhr.status === 200 ? '完成' : '失败';
       sendNext(items, i + 1);
     };
     xhr.onerror = function () {
+      clearInterval(speedTimer);
       it.pct.textContent = '失败';
       sendNext(items, i + 1);
     };
