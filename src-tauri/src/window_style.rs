@@ -25,7 +25,8 @@ use windows::Win32::Graphics::Gdi::{
 };
 use windows::Win32::UI::Shell::{DefSubclassProc, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetWindowRect, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_SHOWWINDOW,
+    GetClientRect, GetWindowRect, SetWindowPos, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE,
+    SWP_NOSIZE, SWP_NOZORDER, WM_NCACTIVATE, WM_NCCALCSIZE, WM_NCPAINT, WM_SHOWWINDOW,
 };
 
 /// 非客户区填充色(COLORREF 0x00BBGGRR),跟随画布色
@@ -68,6 +69,18 @@ pub fn apply(hwnd: isize, dark: bool) {
         }
         // 阴影预留的非客户区:挂一次子类过程,由 WM_NCPAINT 涂画布色
         let _ = SetWindowSubclass(hwnd, Some(nc_paint), 1, 0);
+        // 关键:挂上子类后必须强制重算一次非客户区,WM_NCCALCSIZE 才会生效。
+        // 否则窗口仍保留 tao 创建时那圈 12px 边框、WebView 也停在旧尺寸,
+        // 右侧/底部会露出没被网页覆盖的窗口条(未绘制处是透明的,后面窗口会透出来)。
+        let _ = SetWindowPos(
+            hwnd,
+            None,
+            0,
+            0,
+            0,
+            0,
+            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+        );
         // 立即重画边框(主题切换时需要)
         let _ = RedrawWindow(
             Some(hwnd),

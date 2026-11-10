@@ -44,6 +44,7 @@ interface AccountView {
   allow_download: boolean
   allow_upload_file: boolean
   allow_upload_text: boolean
+  allow_delete: boolean
 }
 
 interface FrozenEntry {
@@ -208,6 +209,8 @@ const newAccPass = ref('')
 const newAccDl = ref(true)
 const newAccUf = ref(true)
 const newAccUt = ref(true)
+const newAccDel = ref(false)
+const showAccModal = ref(false)
 // 冻结文件列表(多选模式或折叠面板展示)
 const frozen = ref<FrozenEntry[]>([])
 const showFrozen = ref(false)
@@ -347,6 +350,13 @@ async function sharePaths(paths: string[]) {
 
 async function browse() {
   const picked = await open({ multiple: true })
+  if (!picked) return
+  await sharePaths(Array.isArray(picked) ? picked : [picked])
+}
+
+/// 选择文件夹分享(后端自动打包成 zip)
+async function browseFolder() {
+  const picked = await open({ directory: true, multiple: true })
   if (!picked) return
   await sharePaths(Array.isArray(picked) ? picked : [picked])
 }
@@ -560,12 +570,37 @@ async function onDrop(e: DragEvent) {
   clearTimeout(dragTimer)
   dragDepth = 0
   dragging.value = false
-  const dropped = Array.from(e.dataTransfer?.files ?? [])
-  if (dropped.length === 0) return
+
+  // 区分文件/文件夹:文件夹不能走 HTTP 上传(会被当成 0 字节文件),
+  // 提示用户用"选择文件夹"(走后端打包 zip)
+  const items = Array.from(e.dataTransfer?.items ?? [])
+  let skippedDirs = 0
+  const files: File[] = []
+  for (const it of items) {
+    if (it.kind !== 'file') continue
+    const entry = (it as DataTransferItem & {
+      webkitGetAsEntry?: () => FileSystemEntry | null
+    }).webkitGetAsEntry?.()
+    if (entry?.isDirectory) {
+      skippedDirs++
+      continue
+    }
+    const f = it.getAsFile()
+    if (f) files.push(f)
+  }
+  if (files.length === 0 && skippedDirs > 0) {
+    toast('文件夹请点「选择文件夹」,会自动打包成 zip')
+    return
+  }
+  if (skippedDirs > 0) {
+    toast(`已跳过 ${skippedDirs} 个文件夹,文件夹请用「选择文件夹」`)
+  }
+  if (files.length === 0) return
+
   uploading.value = true
   let ok = 0
   try {
-    for (const f of dropped) {
+    for (const f of files) {
       const fd = new FormData()
       fd.append('file', f, f.name)
       const res = await fetch(uploadUrl.value, { method: 'POST', body: fd })
@@ -674,17 +709,30 @@ async function addAccount() {
       allowDownload: newAccDl.value,
       allowUploadFile: newAccUf.value,
       allowUploadText: newAccUt.value,
+      allowDelete: newAccDel.value,
     })
     newAccUser.value = ''
     newAccPass.value = ''
     newAccDl.value = true
     newAccUf.value = true
     newAccUt.value = true
+    newAccDel.value = false
+    showAccModal.value = false
     await refreshAccounts()
     toast('账号已添加')
   } catch (e) {
     toast(`${e}`)
   }
+}
+
+function openAccModal() {
+  newAccUser.value = ''
+  newAccPass.value = ''
+  newAccDl.value = true
+  newAccUf.value = true
+  newAccUt.value = true
+  newAccDel.value = false
+  showAccModal.value = true
 }
 
 async function removeAccount(username: string) {
@@ -951,7 +999,12 @@ onUnmounted(() => {
                 </svg>
               </div>
               <p class="dz-t">{{ uploading ? '正在上传…' : '拖入文件或文件夹' }}</p>
-              <p class="dz-s">拖进窗口、点击选择,或 Ctrl+V 粘贴截图 · 文件夹会自动打包成 zip</p>
+              <p class="dz-s">拖进窗口、点击选择,或 Ctrl+V 粘贴截图</p>
+              <div class="dz-actions">
+                <button class="dz-btn" @click.stop="browse">选择文件</button>
+                <button class="dz-btn" @click.stop="browseFolder">选择文件夹</button>
+              </div>
+              <p class="dz-s">文件夹会打包成 zip 分享</p>
             </div>
 
             <template v-if="files.length">
@@ -1323,6 +1376,7 @@ onUnmounted(() => {
                   <span class="chip" :class="{ off: !a.allow_download }">下载</span>
                   <span class="chip" :class="{ off: !a.allow_upload_file }">上传文件</span>
                   <span class="chip" :class="{ off: !a.allow_upload_text }">上传文本</span>
+                  <span class="chip" :class="{ off: !a.allow_delete }">删除</span>
                 </span>
                 <button class="op danger" title="删除账号" @click="removeAccount(a.username)">
                   <svg viewBox="0 0 24 24">
@@ -1334,18 +1388,7 @@ onUnmounted(() => {
                 </button>
               </li>
             </ul>
-            <div class="acc-form">
-              <div class="input-row">
-                <input v-model="newAccUser" class="input" placeholder="用户名" />
-                <input v-model="newAccPass" class="input" type="password" placeholder="密码" />
-              </div>
-              <div class="perm-row">
-                <label class="check-label"><input v-model="newAccDl" type="checkbox" /> 下载</label>
-                <label class="check-label"><input v-model="newAccUf" type="checkbox" /> 上传文件</label>
-                <label class="check-label"><input v-model="newAccUt" type="checkbox" /> 上传文本</label>
-                <button class="sq-btn wide" @click="addAccount">添加</button>
-              </div>
-            </div>
+            <button class="btn primary" @click="openAccModal">添加账号</button>
             <p class="sub">
               账号保存在 <code>~/Pigeon/accounts.json</code> · 密码以加盐哈希存储
             </p>
@@ -1364,6 +1407,35 @@ onUnmounted(() => {
       <div class="drag-box">
         <p class="drag-t">松开,发送到手机</p>
         <p class="drag-s">文件夹将自动打包成 zip</p>
+      </div>
+    </div>
+
+    <!-- 添加账号 -->
+    <div v-if="showAccModal" class="modal-mask" @click.self="showAccModal = false">
+      <div class="modal">
+        <h2 class="modal-t">添加账号</h2>
+        <div class="field">
+          <label>用户名</label>
+          <input v-model="newAccUser" class="input" placeholder="用户名" />
+        </div>
+        <div class="field">
+          <label>密码</label>
+          <input v-model="newAccPass" class="input" type="password" placeholder="密码" />
+        </div>
+        <div class="field">
+          <label>权限</label>
+          <div class="perm-row">
+            <label class="check-label"><input v-model="newAccDl" type="checkbox" /> 下载</label>
+            <label class="check-label"><input v-model="newAccUf" type="checkbox" /> 上传文件</label>
+            <label class="check-label"><input v-model="newAccUt" type="checkbox" /> 上传文本</label>
+            <label class="check-label"><input v-model="newAccDel" type="checkbox" /> 删除</label>
+          </div>
+          <p class="sub">下载 = 浏览文件列表、下载文件、查看记录;删除 = 手机端可删除共享文件</p>
+        </div>
+        <div class="modal-actions">
+          <button class="btn ghost" @click="showAccModal = false">取消</button>
+          <button class="btn primary" @click="addAccount">确定</button>
+        </div>
       </div>
     </div>
 
@@ -1985,6 +2057,28 @@ html::-webkit-scrollbar-corner {
   font-size: 12px;
   color: var(--text-3);
   margin-top: 4px;
+}
+.dz-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  margin-top: 10px;
+}
+.dz-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--card);
+  color: var(--text-2);
+  font-size: 12px;
+  font-family: inherit;
+  cursor: pointer;
+}
+.dz-btn:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+  background: var(--accent-bg);
 }
 
 /* ========== 列表 ========== */

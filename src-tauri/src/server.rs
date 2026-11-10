@@ -28,6 +28,7 @@ pub enum Perm {
     Download,
     UploadFile,
     UploadText,
+    Delete,
 }
 
 impl Perm {
@@ -36,6 +37,7 @@ impl Perm {
             Perm::Download => "下载",
             Perm::UploadFile => "上传文件",
             Perm::UploadText => "上传文本",
+            Perm::Delete => "删除文件",
         }
     }
 }
@@ -159,6 +161,7 @@ impl AppState {
                 allow_download: true,
                 allow_upload_file: true,
                 allow_upload_text: true,
+                allow_delete: true,
             });
         }
         let account = self
@@ -168,6 +171,7 @@ impl AppState {
             Perm::Download => account.allow_download,
             Perm::UploadFile => account.allow_upload_file,
             Perm::UploadText => account.allow_upload_text,
+            Perm::Delete => account.allow_delete,
         };
         if !ok {
             return Err((
@@ -279,6 +283,7 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         .route(&format!("{p}/api/files"), get(api_list_files))
         .route(&format!("{p}/api/clips"), get(api_list_clips).post(api_add_clip))
         .route(&format!("{p}/file/{{name}}"), get(download))
+        .route(&format!("{p}/api/file/{{name}}"), axum::routing::delete(api_delete_remote))
         // token 关闭时的根路径入口(每条路由带 token 守卫)
         .route("/", get(mobile_home).layer(root_token_guard.clone()))
         .route("/app.js", get(mobile_js).layer(root_token_guard.clone()))
@@ -292,6 +297,10 @@ fn router(app: AppHandle, state: SharedState) -> Router {
                 .layer(root_token_guard.clone()),
         )
         .route("/api/files", get(api_list_files).layer(root_token_guard.clone()))
+        .route(
+            "/api/file/{name}",
+            axum::routing::delete(api_delete_remote).layer(root_token_guard.clone()),
+        )
         .route(
             "/api/clips",
             get(api_list_clips)
@@ -412,6 +421,32 @@ async fn api_list_files(
         return resp;
     }
     Json(file_entries(&state.files.dir())).into_response()
+}
+
+/// 手机端删除共享文件(需要有删除权限)
+async fn api_delete_remote(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    AxumPath(name): AxumPath<String>,
+) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::Delete) {
+        return resp;
+    }
+    let safe = crate::files::sanitize(&name);
+    if safe.is_empty() {
+        return (StatusCode::BAD_REQUEST, "invalid filename").into_response();
+    }
+    let path = state.files.dir().join(&safe);
+    if !path.is_file() {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    }
+    match tokio::fs::remove_file(&path).await {
+        Ok(_) => {
+            state.files.bump();
+            Json(json!({ "ok": true })).into_response()
+        }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")).into_response(),
+    }
 }
 
 async fn api_list_clips(
@@ -720,6 +755,7 @@ async fn api_login(
                 "download": account.allow_download,
                 "upload_file": account.allow_upload_file,
                 "upload_text": account.allow_upload_text,
+                "delete": account.allow_delete,
             }
         })),
     )
@@ -740,6 +776,7 @@ async fn api_me(State(state): State<SharedState>, headers: axum::http::HeaderMap
                 "download": a.allow_download,
                 "upload_file": a.allow_upload_file,
                 "upload_text": a.allow_upload_text,
+                "delete": a.allow_delete,
             }
         }))
         .into_response(),
@@ -1143,10 +1180,16 @@ pub fn add_account(
     allowDownload: bool,
     allowUploadFile: bool,
     allowUploadText: bool,
+    allowDelete: bool,
 ) -> Result<(), String> {
-    state
-        .accounts
-        .add(&username, &password, allowDownload, allowUploadFile, allowUploadText)
+    state.accounts.add(
+        &username,
+        &password,
+        allowDownload,
+        allowUploadFile,
+        allowUploadText,
+        allowDelete,
+    )
 }
 
 #[tauri::command]
@@ -1519,6 +1562,12 @@ li a { color: inherit; text-decoration: none; display: flex; align-items: center
 li .bar { flex: 1; height: 5px; border-radius: 999px; background: #eef2ff; overflow: hidden; }
 li .bar i { display: block; height: 100%; background: #3b6ef3; border-radius: 999px; transition: width .15s; width: 0; }
 li.done .fmeta { color: #22a06b; }
+.row-del {
+  flex: none; width: 34px; height: 34px; border: 0; border-radius: 9px;
+  background: none; color: #b0b8c9; font-size: 15px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+}
+.row-del:active { background: #fdeeee; color: #e5484d; }
 .hidden { display: none !important; }
 #empty { text-align: center; color: #8a93a8; font-size: 13px; padding: 16px 0; }
 
@@ -1667,6 +1716,26 @@ const MOBILE_JS: &str = r##"(function () {
         toast('链接已复制,可发给其他人');
       });
       li.appendChild(a);
+      // 有删除权限时,行尾显示删除按钮
+      if (myPerms['delete']) {
+        var del = document.createElement('button');
+        del.className = 'row-del';
+        del.title = '删除';
+        del.innerHTML = '&#10005;';
+        del.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (!confirm('删除 ' + f.name + '?\n此操作不可恢复。')) return;
+          fetch(base + 'api/file/' + encodeURIComponent(f.name), { method: 'DELETE' })
+            .then(function (r) {
+              if (r.ok) { toast('已删除 ' + f.name); loadFiles(); }
+              else if (r.status === 403) { toast('没有删除权限'); }
+              else { toast('删除失败'); }
+            })
+            .catch(function () { toast('删除失败'); });
+        });
+        li.appendChild(del);
+      }
       ul.appendChild(li);
     });
   }
@@ -1735,6 +1804,8 @@ const MOBILE_JS: &str = r##"(function () {
   }
 
   // ---- 账号登录 ----
+  // 当前账号权限(认证关闭时全开)
+  var myPerms = { download: true, upload_file: true, upload_text: true, 'delete': true };
   function showLogin() {
     $('login-mask').classList.remove('hidden');
     setTimeout(function () { try { $('login-user').focus(); } catch (e) {} }, 50);
@@ -1747,6 +1818,7 @@ const MOBILE_JS: &str = r##"(function () {
       .then(function (r) { return r.json().catch(function () { return {}; }); })
       .then(function (me) {
         if (me && me.ok) {
+          if (me.perms) myPerms = me.perms;
           hideLogin();
           loadFiles();
           loadClips();
@@ -1768,11 +1840,14 @@ const MOBILE_JS: &str = r##"(function () {
       body: JSON.stringify({ username: u, password: p })
     }).then(function (r) {
       if (r.ok) {
-        $('login-err').classList.add('hidden');
-        $('login-pass').value = '';
-        hideLogin();
-        loadFiles();
-        loadClips();
+        return r.json().then(function (me) {
+          if (me && me.perms) myPerms = me.perms;
+          $('login-err').classList.add('hidden');
+          $('login-pass').value = '';
+          hideLogin();
+          loadFiles();
+          loadClips();
+        });
       } else {
         $('login-err').textContent = '用户名或密码错误';
         $('login-err').classList.remove('hidden');

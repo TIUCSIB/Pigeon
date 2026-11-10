@@ -23,6 +23,9 @@ pub struct Account {
     /// 上传文本
     #[serde(default = "default_true")]
     pub allow_upload_text: bool,
+    /// 删除共享目录中的文件
+    #[serde(default)]
+    pub allow_delete: bool,
 }
 
 fn default_true() -> bool {
@@ -36,6 +39,7 @@ pub struct AccountView {
     pub allow_download: bool,
     pub allow_upload_file: bool,
     pub allow_upload_text: bool,
+    pub allow_delete: bool,
 }
 
 pub struct AccountsState {
@@ -82,6 +86,7 @@ impl AccountsState {
                 allow_download: a.allow_download,
                 allow_upload_file: a.allow_upload_file,
                 allow_upload_text: a.allow_upload_text,
+                allow_delete: a.allow_delete,
             })
             .collect()
     }
@@ -99,6 +104,7 @@ impl AccountsState {
         dl: bool,
         uf: bool,
         ut: bool,
+        del: bool,
     ) -> Result<(), String> {
         let username = username.trim();
         if username.is_empty() {
@@ -119,6 +125,7 @@ impl AccountsState {
             allow_download: dl,
             allow_upload_file: uf,
             allow_upload_text: ut,
+            allow_delete: del,
         });
         self.save_locked(&accounts)
     }
