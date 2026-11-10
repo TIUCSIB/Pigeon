@@ -282,6 +282,11 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         )
         .route(&format!("{p}/api/files"), get(api_list_files))
         .route(&format!("{p}/api/clips"), get(api_list_clips).post(api_add_clip))
+        .route(&format!("{p}/api/clip/{{id}}"), axum::routing::delete(api_delete_clip))
+        .route(
+            &format!("{p}/api/upload-zip"),
+            post(upload_zip).layer(DefaultBodyLimit::disable()),
+        )
         .route(&format!("{p}/file/{{name}}"), get(download))
         .route(&format!("{p}/api/file/{{name}}"), axum::routing::delete(api_delete_remote))
         // token 关闭时的根路径入口(每条路由带 token 守卫)
@@ -305,6 +310,16 @@ fn router(app: AppHandle, state: SharedState) -> Router {
             "/api/clips",
             get(api_list_clips)
                 .post(api_add_clip)
+                .layer(root_token_guard.clone()),
+        )
+        .route(
+            "/api/clip/{id}",
+            axum::routing::delete(api_delete_clip).layer(root_token_guard.clone()),
+        )
+        .route(
+            "/api/upload-zip",
+            post(upload_zip)
+                .layer(DefaultBodyLimit::disable())
                 .layer(root_token_guard.clone()),
         )
         .route("/file/{name}", get(download).layer(root_token_guard))
@@ -364,7 +379,21 @@ fn static_response(body: &'static str, ctype: &'static str) -> Response {
 }
 
 async fn mobile_home() -> Response {
-    static_response(MOBILE_HTML, "text/html; charset=utf-8")
+    // 主题跟随电脑端设置:暗色时给 <html> 注入 dark 类(缓存 no-cache,刷新即生效)
+    let dark = crate::settings::Settings::load().dark_mode;
+    let html = if dark {
+        MOBILE_HTML.replace("<!--THEME_CLASS-->", " class=\"dark\"")
+    } else {
+        MOBILE_HTML.replace("<!--THEME_CLASS-->", "")
+    };
+    (
+        [
+            (header::CONTENT_TYPE, "text/html; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+        ],
+        html,
+    )
+        .into_response()
 }
 
 async fn mobile_js() -> Response {
@@ -495,6 +524,24 @@ async fn api_add_clip(
     Json(&clip).into_response()
 }
 
+/// 手机端删除单条文字记录(与桌面 delete_clip 同一存储操作)
+async fn api_delete_clip(
+    axum::Extension(app): axum::Extension<AppHandle>,
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    AxumPath(id): AxumPath<u32>,
+) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::UploadText) {
+        return resp;
+    }
+    if state.clips.remove(id) {
+        let _ = app.emit("clip-deleted", id);
+        Json(json!({ "ok": true })).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, "not found").into_response()
+    }
+}
+
 /// 流式接收 multipart 上传,逐块写盘,不整块进内存
 async fn upload(
     axum::Extension(app): axum::Extension<AppHandle>,
@@ -590,6 +637,162 @@ async fn upload(
     }
     state.files.bump();
     Json(json!({ "ok": true, "saved": saved })).into_response()
+}
+
+/// 手机端文件夹上传:multipart 里是带相对路径的文件集合,
+/// 先暂存临时目录,再用 zip_dir 打包成 zip 分享(与桌面 share_files 同风格)
+async fn upload_zip(
+    axum::Extension(app): axum::Extension<AppHandle>,
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    mut multipart: Multipart,
+) -> Response {
+    use tokio::io::AsyncWriteExt;
+
+    if let Err(resp) = state.require_perm(&headers, Perm::UploadFile) {
+        return resp;
+    }
+    let _permit = match state.upload_sem.clone().acquire_owned().await {
+        Ok(p) => p,
+        Err(_) => return (StatusCode::SERVICE_UNAVAILABLE, "服务繁忙").into_response(),
+    };
+    let limit_bps = state.speed_limit();
+    let started = std::time::Instant::now();
+
+    // 第一个字段固定为 folder 名(纯文本),其后是文件字段
+    let mut folder = String::new();
+    let tmp = std::env::temp_dir().join(format!(
+        "pigeon-upload-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis())
+            .unwrap_or(0)
+    ));
+    let mut count = 0usize;
+    let mut total: u64 = 0;
+
+    if let Err(e) = tokio::fs::create_dir_all(&tmp).await {
+        return (StatusCode::INTERNAL_SERVER_ERROR, format!("创建临时目录失败: {e}")).into_response();
+    }
+
+    let result = async {
+        while let Ok(Some(mut field)) = multipart.next_field().await {
+            let name = field.name().unwrap_or("").to_string();
+            if name == "folder" {
+                folder = crate::files::sanitize(
+                    &field.text().await.unwrap_or_default(),
+                );
+                continue;
+            }
+            let Some(fname) = field
+                .file_name()
+                .map(|n| n.to_string())
+                .filter(|n| !n.is_empty())
+            else {
+                continue;
+            };
+            // 保留相对路径(去盘符冒号、统一斜杠),逐段清洗防穿越
+            let rel = fname.replace('\\', "/");
+            let rel = rel.trim_start_matches('/');
+            let mut safe_parts = Vec::new();
+            for part in rel.split('/') {
+                let s = crate::files::sanitize(part);
+                if !s.is_empty() && s != "file" {
+                    safe_parts.push(s);
+                }
+            }
+            if safe_parts.is_empty() {
+                continue;
+            }
+            let rel = safe_parts.join("/");
+            let target = tmp.join(&rel);
+            if let Some(parent) = target.parent() {
+                let _ = tokio::fs::create_dir_all(parent).await;
+            }
+            let mut written: u64 = 0;
+            let mut failed: Option<String> = None;
+            match tokio::fs::File::create(&target).await {
+                Ok(mut file) => {
+                    loop {
+                        let chunk = match field.chunk().await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                failed = Some(format!("read chunk: {e}"));
+                                break;
+                            }
+                        };
+                        let Some(chunk) = chunk else { break };
+                        if let Err(e) = file.write_all(&chunk).await {
+                            failed = Some(format!("write: {e}"));
+                            break;
+                        }
+                        written += chunk.len() as u64;
+                        if limit_bps > 0 {
+                            let expected =
+                                std::time::Duration::from_secs_f64(written as f64 / limit_bps as f64);
+                            let elapsed = started.elapsed();
+                            if expected > elapsed {
+                                tokio::time::sleep(expected - elapsed).await;
+                            }
+                        }
+                    }
+                    if failed.is_none() {
+                        if let Err(e) = file.flush().await {
+                            failed = Some(format!("flush: {e}"));
+                        }
+                    }
+                }
+                Err(e) => failed = Some(format!("create: {e}")),
+            }
+            if let Some(e) = failed {
+                return Err(format!("保存 {rel} 失败: {e}"));
+            }
+            count += 1;
+            total += written;
+        }
+        Ok(())
+    }
+    .await;
+
+    if let Err(e) = result {
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
+    }
+    if count == 0 {
+        let _ = tokio::fs::remove_dir_all(&tmp).await;
+        return (StatusCode::BAD_REQUEST, "no file received").into_response();
+    }
+
+    // 打包成 zip 分享;目录名缺省用 folder 字段或默认值
+    let stem = if folder.is_empty() { "folder".to_string() } else { folder };
+    let dir = state.files.dir();
+    let zip_name = crate::files::unique_name(&dir, &format!("{stem}.zip"));
+    let zip_path = dir.join(&zip_name);
+    let zip_path_for_task = zip_path.clone();
+    let tmp_clone = tmp.clone();
+    let zipped = tauri::async_runtime::spawn_blocking(move || {
+        crate::files::zip_dir(&tmp_clone, &zip_path_for_task)
+    })
+    .await
+    .map_err(|e| e.to_string())
+    .and_then(|r| r);
+
+    let _ = tokio::fs::remove_dir_all(&tmp).await;
+
+    match zipped {
+        Ok(_) => {
+            let _ = app.emit(
+                "file-added",
+                json!({ "name": zip_name, "size": total, "source": "phone" }),
+            );
+            state.files.bump();
+            Json(json!({ "ok": true, "zip": zip_name, "files": count })).into_response()
+        }
+        Err(e) => {
+            let _ = tokio::fs::remove_file(&zip_path).await;
+            (StatusCode::INTERNAL_SERVER_ERROR, format!("打包失败: {e}")).into_response()
+        }
+    }
 }
 
 /// 下载共享目录中的文件,支持 Range 断点续传(HTTP 206)
@@ -1389,7 +1592,7 @@ static LOGO_PNG: &[u8] = include_bytes!("../../public/logo.png");
 
 // 注意:内容含 "# 序列(SVG fill="#fff"),必须用 r## 定界
 const MOBILE_HTML: &str = r##"<!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN"><!--THEME_CLASS-->
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
@@ -1413,12 +1616,20 @@ const MOBILE_HTML: &str = r##"<!doctype html>
 <main>
   <!-- 发送 Tab -->
   <div class="pane on" id="pane-upload">
-    <button id="pick" class="pick">
-      <svg viewBox="0 0 24 24" width="28" height="28"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z"/></svg>
-      <span>选择文件 / 拍照上传</span>
-      <span class="hint">发送到电脑</span>
-    </button>
+    <section class="upload-card">
+      <span class="pick-icon"><svg viewBox="0 0 24 24" width="22" height="22"><path fill="currentColor" d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5z"/></svg></span>
+      <p class="upload-title">上传到电脑</p>
+      <p class="upload-sub">选择文件、拍照,或把文件拖进此页面</p>
+      <div class="upload-actions">
+        <button id="pick" class="upload-btn primary">选择文件</button>
+        <button id="pick-dir" class="upload-btn">
+          <svg viewBox="0 0 24 24" width="15" height="15"><path fill="currentColor" d="M10 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-8l-2-2z"/></svg>
+          文件夹(zip)
+        </button>
+      </div>
+    </section>
     <input type="file" id="input" multiple>
+    <input type="file" id="input-dir" webkitdirectory multiple>
     <section class="text-card">
       <h2>发送文字</h2>
       <textarea id="text-in" placeholder="输入或粘贴文字,发送到电脑剪贴板" rows="3"></textarea>
@@ -1443,11 +1654,15 @@ const MOBILE_HTML: &str = r##"<!doctype html>
   </div>
   <!-- 记录 Tab -->
   <div class="pane" id="pane-clips">
+    <div class="search-row">
+      <input id="clip-search" type="search" placeholder="搜索记录内容…" autocomplete="off">
+    </div>
     <section id="clips-section" class="hidden">
-      <h2>文字记录</h2>
+      <h2>文字记录 <span id="clip-count"></span></h2>
       <ul id="clips"></ul>
     </section>
     <p id="clips-empty" class="hidden panel-empty">还没有文字记录</p>
+    <p id="clips-no-match" class="hidden panel-empty">没有匹配的记录</p>
   </div>
 </main>
 <button id="to-top" class="hidden" aria-label="回到顶部">↑</button>
@@ -1470,174 +1685,285 @@ const MOBILE_HTML: &str = r##"<!doctype html>
 </body>
 </html>"##;
 
-const MOBILE_CSS: &str = r##"* { box-sizing: border-box; margin: 0; padding: 0; }
+const MOBILE_CSS: &str = r##"/* ===== 主题变量(暗色由 html.dark 覆盖,跟随电脑端设置) ===== */
+:root {
+  --bg: #f6f7fb;
+  --card: #ffffff;
+  --card-border: rgba(23, 32, 58, 0.06);
+  --divider: #f0f2f7;
+  --text: #17203a;
+  --text-2: #5b6478;
+  --text-3: #8a93a8;
+  --text-4: #b0b8c9;
+  --accent: #3b6ef3;
+  --accent-weak: #eef2ff;
+  --accent-hover: #2f5de0;
+  --disabled: #b9c8f5;
+  --ok: #22a06b;
+  --danger: #e5484d;
+  --danger-bg: #fdeeee;
+  --header-bg: rgba(255, 255, 255, 0.82);
+  --header-border: rgba(23, 32, 58, 0.08);
+  --shadow-card: 0 1px 2px rgba(23, 32, 58, 0.04), 0 4px 16px rgba(23, 32, 58, 0.05);
+  --shadow-float: 0 4px 14px rgba(59, 110, 243, 0.35);
+  --toast-bg: rgba(23, 32, 58, 0.92);
+  --input-bg: #ffffff;
+}
+html.dark {
+  --bg: #14161a;
+  --card: #1c1f24;
+  --card-border: rgba(255, 255, 255, 0.07);
+  --divider: #262a31;
+  --text: #e8eaee;
+  --text-2: #9aa3b5;
+  --text-3: #737d92;
+  --text-4: #5b6478;
+  --accent: #4d8ff0;
+  --accent-weak: #1d2a3d;
+  --accent-hover: #67a2f3;
+  --disabled: #31415f;
+  --ok: #35c287;
+  --danger: #ef6b6f;
+  --danger-bg: #3a2224;
+  --header-bg: rgba(20, 22, 26, 0.78);
+  --header-border: rgba(255, 255, 255, 0.08);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.2), 0 4px 16px rgba(0, 0, 0, 0.25);
+  --shadow-float: 0 4px 14px rgba(77, 143, 240, 0.3);
+  --toast-bg: rgba(46, 50, 58, 0.95);
+  --input-bg: #22262d;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
 body {
   font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-  background: #f4f6fa; color: #17203a;
+  background: var(--bg); color: var(--text);
   min-height: 100vh; min-height: 100dvh;
-  padding-bottom: 40px;
+  padding-bottom: calc(40px + env(safe-area-inset-bottom));
   -webkit-tap-highlight-color: transparent;
+  transition: background .25s ease, color .25s ease;
 }
+
+/* ===== 头部:白底毛玻璃,吸顶 ===== */
 header {
-  background: linear-gradient(135deg, #4a7cff, #3b5fe0);
-  color: #fff; padding: 22px 20px 0;
-  border-radius: 0 0 22px 22px;
+  background: var(--header-bg);
+  -webkit-backdrop-filter: saturate(180%) blur(20px);
+  backdrop-filter: saturate(180%) blur(20px);
+  color: var(--text);
+  padding: calc(10px + env(safe-area-inset-top)) 18px 8px;
+  border-bottom: 1px solid var(--header-border);
   position: sticky; top: 0; z-index: 10;
 }
-.brand { display: flex; align-items: center; gap: 12px; }
-.logo {
-  width: 42px; height: 42px; flex: none;
-}
-.logo img { width: 42px; height: 42px; border-radius: 12px; display: block; }
-h1 { font-size: 19px; }
-#host { font-size: 12px; opacity: .85; font-family: ui-monospace, Consolas, monospace; }
+.brand { display: flex; align-items: center; gap: 10px; }
+.logo { width: 34px; height: 34px; flex: none; }
+.logo img { width: 34px; height: 34px; border-radius: 9px; display: block; }
+h1 { font-size: 17px; letter-spacing: .2px; }
+#host { font-size: 11px; color: var(--text-3); font-family: ui-monospace, Consolas, monospace; }
 
-/* Tab 导航(吸顶) */
-.tabs { display: flex; gap: 6px; margin-top: 14px; }
+/* Tab 导航:胶囊选中态 */
+.tabs { display: flex; gap: 4px; margin-top: 8px; }
 .tab {
-  flex: 1; border: 0; background: none; color: rgba(255,255,255,.75);
+  flex: 1; border: 0; background: none; color: var(--text-3);
   font-size: 14px; font-weight: 600; font-family: inherit;
-  padding: 10px 0 12px; cursor: pointer;
-  border-bottom: 2.5px solid transparent;
+  padding: 8px 0; cursor: pointer; border-radius: 999px;
+  transition: color .15s ease, background .15s ease;
 }
-.tab.on { color: #fff; border-bottom-color: #fff; }
+.tab.on { color: var(--accent); background: var(--accent-weak); }
+.tab:active { opacity: .7; }
 .tab span { font-size: 11px; font-weight: 400; opacity: .8; }
 
-/* 分区面板:只显示当前 Tab */
+/* 分区面板:只显示当前 Tab,切换时淡入 */
 .pane { display: none; }
-.pane.on { display: block; }
+.pane.on { display: block; animation: fade-in .22s ease; }
+@keyframes fade-in { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
 
 /* 搜索框 */
-.search-row { margin-bottom: 14px; }
-#file-search {
-  width: 100%; height: 42px; border: 1.5px solid #e3e8f2; border-radius: 12px;
+.search-row { margin-bottom: 18px; }
+.search-row input {
+  width: 100%; height: 42px; border: 1.5px solid transparent; border-radius: 12px;
   padding: 0 14px; font-size: 14px; font-family: inherit;
-  background: #fff; box-sizing: border-box;
+  background: var(--input-bg); color: var(--text); box-sizing: border-box;
   -webkit-appearance: none; appearance: none;
+  box-shadow: var(--shadow-card);
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-#file-search:focus { outline: none; border-color: #3b6ef3; }
-#no-match { text-align: center; color: #8a93a8; font-size: 13px; padding: 14px 0; }
-.panel-empty { text-align: center; color: #8a93a8; font-size: 13px; padding: 40px 0; }
+.search-row input::placeholder { color: var(--text-4); }
+.search-row input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
+#no-match { text-align: center; color: var(--text-3); font-size: 13px; padding: 14px 0; }
+.panel-empty { text-align: center; color: var(--text-3); font-size: 13px; padding: 40px 0; }
 
 /* 回到顶部 */
 #to-top {
-  position: fixed; right: 16px; bottom: 24px; z-index: 20;
+  position: fixed; right: 16px; bottom: calc(24px + env(safe-area-inset-bottom)); z-index: 20;
   width: 42px; height: 42px; border-radius: 50%; border: 0;
-  background: #3b6ef3; color: #fff; font-size: 18px; font-weight: 700;
-  cursor: pointer; box-shadow: 0 4px 14px rgba(59,110,243,.35);
+  background: var(--accent); color: #fff; font-size: 18px; font-weight: 700;
+  cursor: pointer; box-shadow: var(--shadow-float);
+  transition: transform .1s ease, opacity .2s ease;
 }
 #to-top:active { transform: scale(.94); }
-main { padding: 18px 16px; display: flex; flex-direction: column; gap: 16px; }
-.pick {
-  width: 100%; border: 1px solid #e6e9ef; border-radius: 16px; padding: 22px 16px;
-  background: #fff;
-  display: flex; flex-direction: column; align-items: center; gap: 6px;
-  color: #17203a; font-size: 15px; font-weight: 600; cursor: pointer;
-  transition: transform .1s;
+
+main { padding: 8px 16px; display: flex; flex-direction: column; gap: 22px; }
+
+/* 上传卡:图标 + 标题 + 双按钮 */
+.upload-card {
+  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  padding: 22px 16px 18px;
 }
-.pick:active { transform: scale(.98); }
-.pick svg { color: #3b6ef3; }
-.pick .hint { font-size: 12px; color: #8a93a8; font-weight: 400; }
-#input { display: none; }
-section { background: #fff; border: 1px solid #e6e9ef; border-radius: 16px; padding: 16px; }
+.pick-icon {
+  width: 44px; height: 44px; border-radius: 50%;
+  background: var(--accent-weak); color: var(--accent);
+  display: flex; align-items: center; justify-content: center;
+  margin-bottom: 4px;
+}
+.upload-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.upload-sub { font-size: 12px; color: var(--text-3); }
+.upload-actions { display: flex; gap: 10px; margin-top: 12px; width: 100%; }
+.upload-btn {
+  flex: 1; height: 40px; border: 1px solid var(--card-border); border-radius: 12px;
+  background: var(--card); color: var(--text-2);
+  font-size: 13px; font-weight: 600; font-family: inherit; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+  transition: transform .1s ease, border-color .15s ease, color .15s ease;
+}
+.upload-btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.upload-btn.primary:active { background: var(--accent-hover); }
+.upload-btn:active { transform: scale(.97); }
+#input, #input-dir { display: none; }
+
+/* 拖拽悬停:底部浮动提示条,不遮内容 */
+body.dragging::after {
+  content: '松开上传到电脑';
+  position: fixed;
+  left: 50%; bottom: calc(28px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 50;
+  padding: 12px 22px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 14px; font-weight: 600;
+  box-shadow: var(--shadow-float);
+  pointer-events: none;
+  animation: fade-in .15s ease;
+}
+
+section { background: var(--card); border: 1px solid var(--card-border); border-radius: 16px; padding: 14px 16px; box-shadow: var(--shadow-card);margin-top:10px; }
 h2 { font-size: 14px; margin-bottom: 10px; }
-#count { color: #8a93a8; font-size: 12px; font-weight: 400; }
+#count { color: var(--text-3); font-size: 12px; font-weight: 400; }
 ul { list-style: none; }
 li {
   display: flex; align-items: center; gap: 10px;
-  padding: 10px 2px; border-bottom: 1px solid #f0f2f7;
+  padding: 10px 2px; border-bottom: 1px solid var(--divider);
 }
 li:last-child { border-bottom: 0; }
 .ext {
-  flex: none; width: 36px; height: 36px; border-radius: 10px;
-  background: #eef2ff; color: #3b6ef3;
+  flex: none; width: 38px; height: 38px; border-radius: 10px;
+  background: var(--accent-weak); color: var(--accent);
   font-size: 9px; font-weight: 700; text-transform: uppercase;
   display: flex; align-items: center; justify-content: center; overflow: hidden;
 }
 .fmain { flex: 1; min-width: 0; }
 .fname { font-size: 13px; display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.fmeta { font-size: 11px; color: #8a93a8; }
-.fsize { font-size: 12px; color: #5b6478; flex: none; }
+.fmeta { font-size: 11px; color: var(--text-3); margin-top: 2px; }
+.fsize { font-size: 12px; color: var(--accent); flex: none; font-weight: 600; }
 li a { color: inherit; text-decoration: none; display: flex; align-items: center; gap: 10px; flex: 1; min-width: 0; }
-li .bar { flex: 1; height: 5px; border-radius: 999px; background: #eef2ff; overflow: hidden; }
-li .bar i { display: block; height: 100%; background: #3b6ef3; border-radius: 999px; transition: width .15s; width: 0; }
-li.done .fmeta { color: #22a06b; }
+li a:active { opacity: .7; }
+li .bar { flex: 1; height: 5px; border-radius: 999px; background: var(--accent-weak); overflow: hidden; }
+li .bar i { display: block; height: 100%; background: var(--accent); border-radius: 999px; transition: width .15s; width: 0; }
+li.done .fmeta { color: var(--ok); }
 .row-del {
   flex: none; width: 34px; height: 34px; border: 0; border-radius: 9px;
-  background: none; color: #b0b8c9; font-size: 15px; cursor: pointer;
+  background: none; color: var(--text-4); font-size: 15px; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
+  transition: background .15s ease, color .15s ease;
 }
-.row-del:active { background: #fdeeee; color: #e5484d; }
+.row-del:active { background: var(--danger-bg); color: var(--danger); }
 .hidden { display: none !important; }
-#empty { text-align: center; color: #8a93a8; font-size: 13px; padding: 16px 0; }
+#empty { text-align: center; color: var(--text-3); font-size: 13px; padding: 16px 0; }
 
 /* 登录遮罩 */
 #login-mask {
   position: fixed; inset: 0; z-index: 100;
-  background: #f4f6fa;
+  background: var(--bg);
   display: flex; align-items: center; justify-content: center;
   padding: 24px;
 }
 .login-card {
   width: 100%; max-width: 320px;
   display: flex; flex-direction: column; align-items: center; gap: 10px;
+  animation: fade-in .25s ease;
 }
 .login-icon {
   width: 52px; height: 52px; border-radius: 15px;
-  background: linear-gradient(135deg, #4a7cff, #3b5fe0);
+  background: var(--accent-weak); color: var(--accent);
   display: flex; align-items: center; justify-content: center;
   margin-bottom: 4px;
 }
 .login-card h2 { font-size: 17px; }
-.login-sub { font-size: 12px; color: #8a93a8; margin-bottom: 8px; }
+.login-sub { font-size: 12px; color: var(--text-3); margin-bottom: 8px; }
 .login-card input {
-  width: 100%; height: 44px; border: 1.5px solid #e3e8f2; border-radius: 12px;
+  width: 100%; height: 44px; border: 1.5px solid var(--card-border); border-radius: 12px;
   padding: 0 14px; font-size: 14px; font-family: inherit;
-  background: #fff; box-sizing: border-box; -webkit-appearance: none;
+  background: var(--input-bg); color: var(--text); box-sizing: border-box; -webkit-appearance: none;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.login-card input:focus { outline: none; border-color: #3b6ef3; }
+.login-card input::placeholder { color: var(--text-4); }
+.login-card input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
 .login-card .send-btn { margin-top: 4px; }
-#login-err { font-size: 12px; color: #e5484d; }
+#login-err { font-size: 12px; color: var(--danger); }
 
+/* Toast:滑入滑出 */
 #toast {
-  position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
-  background: #17203a; color: #fff; font-size: 13px;
+  position: fixed; bottom: calc(24px + env(safe-area-inset-bottom)); left: 50%;
+  transform: translateX(-50%);
+  background: var(--toast-bg);
+  -webkit-backdrop-filter: blur(8px); backdrop-filter: blur(8px);
+  color: #fff; font-size: 13px;
   padding: 10px 18px; border-radius: 999px; max-width: 88vw;
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  z-index: 30;
+  animation: toast-in .25s ease;
 }
+@keyframes toast-in { from { opacity: 0; transform: translate(-50%, 8px); } to { opacity: 1; transform: translate(-50%, 0); } }
+
 .text-card textarea {
-  width: 100%; border: 1.5px solid #e3e8f2; border-radius: 10px;
+  width: 100%; border: 1.5px solid var(--card-border); border-radius: 12px;
   padding: 10px 12px; font-size: 14px; font-family: inherit;
+  background: var(--input-bg); color: var(--text);
   resize: vertical; min-height: 60px; box-sizing: border-box;
+  transition: border-color .15s ease, box-shadow .15s ease;
 }
-.text-card textarea:focus { outline: none; border-color: #3b6ef3; }
+.text-card textarea::placeholder { color: var(--text-4); }
+.text-card textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-weak); }
 .send-btn {
-  margin-top: 10px; width: 100%; border: 0; border-radius: 10px;
-  padding: 11px; background: #3b6ef3; color: #fff;
-  font-size: 14px; font-weight: 600; cursor: pointer;
+  margin-top: 10px; width: 100%; border: 0; border-radius: 12px;
+  padding: 11px; background: var(--accent); color: #fff;
+  font-size: 14px; font-weight: 600; cursor: pointer; font-family: inherit;
+  transition: background .15s ease, transform .1s ease, opacity .15s ease;
 }
-.send-btn:disabled { background: #b9c8f5; cursor: default; }
-.send-btn:not(:disabled):active { transform: scale(.98); }
+.send-btn:disabled { background: var(--accent-weak); color: var(--text-3); cursor: default; }
+.send-btn:not(:disabled):active { transform: scale(.98); background: var(--accent-hover); }
 #clips li {
-  display: block; padding: 10px 2px; border-bottom: 1px solid #f0f2f7;
+  display: block; padding: 10px 2px; border-bottom: 1px solid var(--divider);
 }
 #clips li:last-child { border-bottom: 0; }
 .clip-text {
-  font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-all;
+  font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-all;
   max-height: 5.2em; overflow: hidden;
 }
 .clip-foot {
   margin-top: 6px; display: flex; justify-content: space-between; align-items: center;
 }
-.clip-time { font-size: 11px; color: #8a93a8; }
+.clip-ops { display: flex; align-items: center; gap: 6px; }
+.clip-time { font-size: 11px; color: var(--text-3); }
 .clip-copy {
-  border: 0; background: #eef2ff; color: #3b6ef3; border-radius: 7px;
-  font-size: 12px; padding: 5px 12px; cursor: pointer;
+  border: 0; background: var(--accent-weak); color: var(--accent); border-radius: 7px;
+  font-size: 12px; font-weight: 600; padding: 5px 12px; cursor: pointer; font-family: inherit;
 }
 .clip-copy:active { transform: scale(.96); }
 .thumb {
   width: 44px; height: 44px; object-fit: cover; border-radius: 8px; flex: none;
-  background: #f0f2f7;
+  background: var(--divider);
 }"##;
 
 const MOBILE_JS: &str = r##"(function () {
@@ -1751,9 +2077,23 @@ const MOBILE_JS: &str = r##"(function () {
   }
 
   // ---- 文字记录 ----
+  // 全量记录缓存,搜索框在本地过滤(与文件页同一模式)
+  var allClips = [];
   function renderClips(list) {
+    allClips = list;
+    applyClipFilter();
+    $('tab-clip-n') && ($('tab-clip-n').textContent = '');
+  }
+  function applyClipFilter() {
+    var q = ($('clip-search').value || '').trim().toLowerCase();
+    var list = q
+      ? allClips.filter(function (c) { return c.content.toLowerCase().indexOf(q) >= 0; })
+      : allClips;
     var ul = $('clips');
-    $('clips-section').classList.toggle('hidden', list.length === 0);
+    $('clip-count').textContent = list.length ? '(' + list.length + ')' : '';
+    $('clips-section').classList.toggle('hidden', allClips.length === 0);
+    $('clips-empty').classList.toggle('hidden', allClips.length > 0);
+    $('clips-no-match').classList.toggle('hidden', !(allClips.length > 0 && list.length === 0));
     ul.innerHTML = '';
     list.forEach(function (c) {
       var li = document.createElement('li');
@@ -1764,12 +2104,32 @@ const MOBILE_JS: &str = r##"(function () {
       var time = document.createElement('span');
       time.className = 'clip-time';
       time.textContent = (c.source === 'phone' ? '手机 · ' : '电脑 · ') + new Date(c.created).toLocaleString();
+      var ops = document.createElement('span');
+      ops.className = 'clip-ops';
       var copy = document.createElement('button');
       copy.className = 'clip-copy'; copy.textContent = '复制';
       copy.addEventListener('click', function () {
         copyText(c.content);
       });
-      foot.appendChild(time); foot.appendChild(copy);
+      ops.appendChild(copy);
+      // 删除单条记录(有上传文本权限即可删除自己的记录通道)
+      if (myPerms.upload_text) {
+        var del = document.createElement('button');
+        del.className = 'row-del'; del.title = '删除';
+        del.innerHTML = '&#10005;';
+        del.addEventListener('click', function () {
+          if (!confirm('删除这条记录?')) return;
+          fetch(base + 'api/clip/' + c.id, { method: 'DELETE' })
+            .then(function (r) {
+              if (r.ok) { toast('已删除'); loadClips(); }
+              else if (r.status === 403) { toast('没有权限'); }
+              else { toast('删除失败'); }
+            })
+            .catch(function () { toast('删除失败'); });
+        });
+        ops.appendChild(del);
+      }
+      foot.appendChild(time); foot.appendChild(ops);
       li.appendChild(txt); li.appendChild(foot);
       ul.appendChild(li);
     });
@@ -1936,12 +2296,69 @@ const MOBILE_JS: &str = r##"(function () {
 
   // ---- 上传 ----
   var input = $('input'), queue = $('queue'), ps = $('progress-section');
+  var inputDir = $('input-dir');
 
   $('pick').addEventListener('click', function () { input.click(); });
   input.addEventListener('change', function () {
     sendFiles(Array.prototype.slice.call(input.files));
     input.value = '';
   });
+  // 文件夹选择:webkitdirectory 展开成带相对路径的文件列表,打包成 zip 上传
+  $('pick-dir').addEventListener('click', function () { inputDir.click(); });
+  inputDir.addEventListener('change', function () {
+    var files = Array.prototype.slice.call(inputDir.files);
+    if (!files.length) return;
+    // 顶层文件夹名取自第一个文件的 webkitRelativePath
+    var first = files[0].webkitRelativePath || files[0].name;
+    var folder = first.split('/')[0] || 'folder';
+    sendFolderZip(folder, files);
+    inputDir.value = '';
+  });
+
+  // 文件夹上传:每个文件一个字段,服务端暂存打包成 zip
+  function sendFolderZip(folder, files) {
+    ps.classList.remove('hidden');
+    var li = document.createElement('li');
+    li.innerHTML = '<span class="ext">zip</span><span class="fmain"><span class="fname"></span><span class="bar"><i></i></span></span><span class="fsize">0%</span>';
+    li.querySelector('.fname').textContent = folder + '/ (' + files.length + ' 个文件)';
+    queue.appendChild(li);
+    var bar = li.querySelector('.bar i'), pct = li.querySelector('.fsize');
+
+    var fd = new FormData();
+    fd.append('folder', folder);
+    files.forEach(function (f) {
+      // filename 保留相对路径,服务端按路径暂存
+      fd.append('files', f, f.webkitRelativePath || f.name);
+    });
+    var xhr = new XMLHttpRequest();
+    xhr.open('POST', base + 'api/upload-zip');
+    xhr.upload.onprogress = function (e) {
+      if (!e.lengthComputable) return;
+      var p = Math.round(e.loaded / e.total * 100);
+      bar.style.width = p + '%';
+      pct.textContent = p + '%';
+    };
+    xhr.onload = function () {
+      li.classList.add('done');
+      bar.style.width = '100%';
+      if (xhr.status === 200) {
+        pct.textContent = '完成';
+        toast('文件夹已打包分享:' + folder + '.zip');
+      } else {
+        pct.textContent = '失败';
+        toast('文件夹上传失败(' + xhr.status + ')');
+      }
+      setTimeout(function () { ps.classList.add('hidden'); queue.innerHTML = ''; }, 1200);
+      loadFiles();
+    };
+    xhr.onerror = function () {
+      li.classList.add('done');
+      pct.textContent = '失败';
+      toast('文件夹上传失败');
+      setTimeout(function () { ps.classList.add('hidden'); queue.innerHTML = ''; }, 1200);
+    };
+    xhr.send(fd);
+  }
 
   function sendFiles(files) {
     if (!files.length) return;
@@ -2012,6 +2429,61 @@ const MOBILE_JS: &str = r##"(function () {
     xhr.send(fd);
   }
 
+  // ---- 拖拽上传(桌面浏览器) ----
+  // 拖文件到页面任意位置直接上传;文件夹拖拽提示用「选择文件夹」按钮
+  var dragDepth = 0;
+  function hasFiles(e) {
+    if (e.dataTransfer && e.dataTransfer.types) {
+      for (var i = 0; i < e.dataTransfer.types.length; i++) {
+        if (e.dataTransfer.types[i] === 'Files') return true;
+      }
+    }
+    return false;
+  }
+  window.addEventListener('dragenter', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth++;
+    document.body.classList.add('dragging');
+  });
+  window.addEventListener('dragover', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+  });
+  window.addEventListener('dragleave', function (e) {
+    if (!hasFiles(e)) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if (dragDepth === 0) document.body.classList.remove('dragging');
+  });
+  window.addEventListener('drop', function (e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dragDepth = 0;
+    document.body.classList.remove('dragging');
+    var items = e.dataTransfer.items;
+    var files = [];
+    var skippedDirs = 0;
+    if (items && items.length) {
+      for (var i = 0; i < items.length; i++) {
+        var entry = null;
+        try { entry = items[i].webkitGetAsEntry && items[i].webkitGetAsEntry(); } catch (err) {}
+        if (entry && entry.isDirectory) { skippedDirs++; continue; }
+        var f = items[i].getAsFile && items[i].getAsFile();
+        if (f) files.push(f);
+      }
+    } else {
+      files = Array.prototype.slice.call(e.dataTransfer.files);
+    }
+    if (!files.length && skippedDirs > 0) {
+      toast('文件夹请点「选择文件夹上传」,会打包成 zip');
+      return;
+    }
+    if (skippedDirs > 0) {
+      toast('已跳过 ' + skippedDirs + ' 个文件夹,请用「选择文件夹上传」');
+    }
+    sendFiles(files);
+  });
+
   // ---- Tab 切换 ----
   var tabs = document.querySelectorAll('.tab');
   Array.prototype.forEach.call(tabs, function (btn) {
@@ -2025,8 +2497,9 @@ const MOBILE_JS: &str = r##"(function () {
     });
   });
 
-  // ---- 文件搜索(本地过滤) ----
+  // ---- 文件/记录搜索(本地过滤) ----
   $('file-search').addEventListener('input', applyFilter);
+  $('clip-search').addEventListener('input', applyClipFilter);
 
   // ---- 回到顶部 ----
   var toTop = $('to-top');
