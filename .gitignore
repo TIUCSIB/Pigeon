@@ -2,3 +2,6 @@ node_modules
 dist
 src-tauri/target
 app-icon.png
+
+# ZCode 本地会话目录
+.zcode/
