@@ -1429,10 +1429,18 @@ onUnmounted(() => {
         <div class="field">
           <label>权限</label>
           <div class="perm-row">
-            <label class="check-label"><input v-model="newAccDl" type="checkbox" /> 下载</label>
-            <label class="check-label"><input v-model="newAccUf" type="checkbox" /> 上传文件</label>
-            <label class="check-label"><input v-model="newAccUt" type="checkbox" /> 上传文本</label>
-            <label class="check-label"><input v-model="newAccDel" type="checkbox" /> 删除</label>
+            <label class="check-label">
+              <input v-model="newAccDl" type="checkbox" /><span>下载</span>
+            </label>
+            <label class="check-label">
+              <input v-model="newAccUf" type="checkbox" /><span>上传文件</span>
+            </label>
+            <label class="check-label">
+              <input v-model="newAccUt" type="checkbox" /><span>上传文本</span>
+            </label>
+            <label class="check-label">
+              <input v-model="newAccDel" type="checkbox" /><span>删除</span>
+            </label>
           </div>
           <p class="sub">下载 = 浏览文件列表、下载文件、查看记录;删除 = 手机端可删除共享文件</p>
         </div>
@@ -2352,6 +2360,12 @@ li:has(.check.on) .row-main {
   color: var(--text-2);
   cursor: pointer;
   user-select: none;
+}
+.check-label span {
+  display: inline-flex;
+  align-items: center;
+  height: 15px;
+  line-height: 15px;
 }
 /* 自绘复选框:原生控件内部绘制不跟盒中心,自绘保证与文字严格对齐 */
 .check-label input {
