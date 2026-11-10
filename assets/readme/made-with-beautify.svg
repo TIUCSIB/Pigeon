@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="420" height="64" viewBox="0 0 420 64" role="img" aria-labelledby="sig-title sig-desc">
+  <title id="sig-title">README made with beautify-github-readme</title>
+  <desc id="sig-desc">签名徽章:README 由 beautify-github-readme 技能美化,采用 Pigeon 的深蓝底与品牌蓝。</desc>
+
+  <defs>
+    <linearGradient id="sigBg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#0e1420"/>
+      <stop offset="1" stop-color="#131b2e"/>
+    </linearGradient>
+    <linearGradient id="sigBrand" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4a7cff"/>
+      <stop offset="1" stop-color="#2f5de0"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="420" height="64" rx="16" fill="url(#sigBg)"/>
+
+  <!-- 迷你鸽标(呼应 hero 的 logo) -->
+  <g transform="translate(16 16)">
+    <rect width="32" height="32" rx="8" fill="url(#sigBrand)"/>
+    <path d="M7 23 L7 12 C7 8.5 9.5 6 13 6 L18 6 C23 6 26 9.5 26 14 C26 18.5 23 22 18 22 L14 22 L14 23 Z" fill="#fff" opacity=".92"/>
+    <path d="M13 15 C14.5 12 18 10.5 21.5 11 C20.5 13.5 18 15 15 15.5 Z" fill="#4a7cff"/>
+  </g>
+
+  <g font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif">
+    <text x="60" y="27" font-size="11" fill="#8fa3c8" letter-spacing="2.5">README</text>
+    <text x="60" y="45" font-size="15" font-weight="700" fill="#f2f6ff">MADE WITH <tspan fill="#7ea4ff">beautify-github-readme</tspan></text>
+  </g>
+
+  <!-- 传输虚线 motif 收尾 -->
+  <path d="M368 32 h 26" stroke="#4a7cff" stroke-width="2" stroke-dasharray="1 6" stroke-linecap="round"/>
+  <path d="M390 26 l 7 6 l -7 6" fill="none" stroke="#4a7cff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

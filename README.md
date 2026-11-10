@@ -65,3 +65,7 @@ pnpm tauri build   # 产出 NSIS 安装包 + exe
 ## 安全说明
 
 token 随 URL 明文传输,适用于**可信局域网**;不要在不可信网络中开放。持有链接的设备都可下载共享目录内文件,账号认证开启后按权限隔离。
+
+<p align="center">
+  <a href="https://github.com/oil-oil/beautify-github-readme"><img src="./assets/readme/made-with-beautify.svg" width="300" alt="README made with beautify-github-readme"></a>
+</p>
