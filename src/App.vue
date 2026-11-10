@@ -51,7 +51,7 @@ interface FrozenEntry {
   size: number
 }
 
-type Tab = 'connect' | 'files' | 'clips' | 'settings'
+type Tab = 'connect' | 'files' | 'clips' | 'security' | 'settings'
 
 const tab = ref<Tab>('connect')
 const info = ref<ServerInfo | null>(null)
@@ -849,6 +849,7 @@ onUnmounted(() => {
             文件<span v-if="files.length" class="tab-n">{{ files.length }}</span>
           </button>
           <button :class="{ on: tab === 'clips' }" @click="tab = 'clips'">记录</button>
+          <button :class="{ on: tab === 'security' }" @click="tab = 'security'">安全</button>
           <button :class="{ on: tab === 'settings' }" @click="tab = 'settings'">设置</button>
         </nav>
 
@@ -1264,16 +1265,19 @@ onUnmounted(() => {
             <p class="sub">并发上传上限(1–8,重启生效) · 全局限速 0 = 不限,立即生效</p>
           </div>
 
-          <div class="hr"></div>
+          <p class="sub note">
+            所有设置即改即存,保存在 <code>~/Pigeon/settings.json</code> · token 每次启动随机生成
+          </p>
+        </div>
 
+        <!-- ========== 安全 ========== -->
+        <div v-show="tab === 'security'" class="body">
           <div class="field">
-            <label>安全</label>
+            <label>访问控制</label>
             <div class="opt-row compact">
               <span class="opt-text">
                 <span class="opt-t">链接 token</span>
-                <span class="opt-s">
-                  链接中携带随机 token,不知道完整链接无法访问
-                </span>
+                <span class="opt-s">链接中携带随机 token,不知道完整链接无法访问</span>
               </span>
               <button
                 class="switch"
@@ -1304,6 +1308,8 @@ onUnmounted(() => {
               已关闭 token:局域网内任何人拿到 IP 即可访问,请确认网络可信
             </p>
           </div>
+
+          <div class="hr"></div>
 
           <div class="field">
             <label>账号</label>
@@ -1340,11 +1346,10 @@ onUnmounted(() => {
                 <button class="sq-btn wide" @click="addAccount">添加</button>
               </div>
             </div>
+            <p class="sub">
+              账号保存在 <code>~/Pigeon/accounts.json</code> · 密码以加盐哈希存储
+            </p>
           </div>
-
-          <p class="sub note">
-            所有设置即改即存,保存在 <code>~/Pigeon/settings.json</code> · token 每次启动随机生成
-          </p>
         </div>
       </div>
     </div>
