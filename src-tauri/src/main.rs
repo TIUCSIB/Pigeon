@@ -2,6 +2,7 @@
 
 mod accounts;
 mod clips;
+mod devices;
 mod files;
 mod server;
 mod settings;
@@ -27,6 +28,9 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             server::server_info,
             server::list_files,
+            server::list_devices,
+            server::list_history,
+            server::clear_history,
             server::open_folder,
             server::reveal_file,
             server::share_files,
@@ -78,11 +82,13 @@ fn main() {
             // 文字记录等持久化文件放 ~/Pigeon 下
             let pigeon_dir = settings::pigeon_dir();
             let clips = clips::ClipsState::load(pigeon_dir.join("clips.json"));
+            let devices = devices::DevicesState::load(pigeon_dir.join("devices.json"));
             let accounts = Arc::new(accounts::AccountsState::load());
 
             let shared = Arc::new(server::AppState::new(
                 files::FilesState::new(inbox),
                 clips,
+                devices,
                 host,
                 port,
                 settings.sharing,

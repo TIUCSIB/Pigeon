@@ -12,6 +12,7 @@ defineEmits<{ 'update:modelValue': [value: Tab] }>()
             文件<span v-if="fileCount" class="tab-n">{{ fileCount }}</span>
           </button>
           <button :class="{ on: modelValue === 'clips' }" @click="$emit('update:modelValue', 'clips')">记录</button>
+          <button :class="{ on: modelValue === 'devices' }" @click="$emit('update:modelValue', 'devices')">设备</button>
           <button :class="{ on: modelValue === 'security' }" @click="$emit('update:modelValue', 'security')">安全</button>
           <button :class="{ on: modelValue === 'settings' }" @click="$emit('update:modelValue', 'settings')">设置</button>
         </nav>

@@ -2,8 +2,19 @@
 import { ref } from 'vue'
 import type { ServerInfo } from '../types/app'
 
-defineProps<{ sharing: boolean; qr: string; serverInfo: ServerInfo | null; sending: boolean }>()
-defineEmits<{ 'copy-url': []; 'send-text': []; 'send-clipboard-text': []; 'toggle-sharing': []; 'open-firewall': [] }>()
+defineProps<{
+  sharing: boolean
+  qr: string
+  serverInfo: ServerInfo | null
+  sending: boolean
+}>()
+defineEmits<{
+  'copy-url': []
+  'send-text': []
+  'send-clipboard-text': []
+  'toggle-sharing': []
+  'open-firewall': []
+}>()
 const textInput = defineModel<string>('textInput', { required: true })
 const showHelp = ref(false)
 </script>
@@ -87,11 +98,11 @@ const showHelp = ref(false)
             </button>
           </p>
           <div v-if="showHelp" class="help-card">
-            <ol class="help-list">
-              <li>确认手机和电脑连的是<b>同一个 Wi-Fi</b>(部分路由器开了 AP 隔离会互相不可见)</li>
-              <li>检查顶栏状态灯为绿色「分享中」</li>
-              <li>Windows 防火墙首次弹窗时需点过「允许」;没点过可在防火墙设置里放行 Pigeon</li>
-            </ol>
+              <ol class="help-list">
+                <li>确认手机和电脑连的是<b>同一个 Wi-Fi</b>(部分路由器开了 AP 隔离会互相不可见)</li>
+                <li>检查顶栏状态灯为绿色「分享中」</li>
+                <li>Windows 防火墙首次弹窗时需点过「允许」;没点过可在防火墙设置里放行 Pigeon</li>
+              </ol>
             <button class="btn ghost" @click="$emit('open-firewall')">打开防火墙设置</button>
           </div>
         </div>

@@ -16,7 +16,9 @@ defineEmits<{ cancel: []; confirm: [] }>()
                 ? '清空文字记录'
                 : kind === 'files-batch'
                   ? '删除选中文件'
-                  : '清空共享文件'
+                  : kind === 'history-clear'
+                    ? '清空传输历史'
+                    : '清空共享文件'
           }}
         </h2>
         <p v-if="kind === 'file'" class="modal-desc">
@@ -27,6 +29,9 @@ defineEmits<{ cancel: []; confirm: [] }>()
         </p>
         <p v-else-if="kind === 'files-batch'" class="modal-desc">
           确定删除选中的 {{ selectedCount }} 个文件?此操作不可恢复。
+        </p>
+        <p v-else-if="kind === 'history-clear'" class="modal-desc">
+          确定清空全部传输历史?设备列表会保留,此操作不可恢复。
         </p>
         <p v-else class="modal-desc">
           确定清空共享目录中的 {{ filesCount }} 个文件?手机端将无法再下载,此操作不可恢复。

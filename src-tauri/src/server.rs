@@ -16,6 +16,7 @@ use tokio_stream::StreamExt;
 use tokio_util::io::ReaderStream;
 
 use crate::clips::{Clip, ClipsState};
+use crate::devices::{DeviceEntry, DevicesState, TransferRecord};
 use crate::files::{file_entries, reveal_in_explorer, FileEntry, FilesState};
 
 const TOKEN_LEN: usize = 12;
@@ -46,6 +47,7 @@ impl Perm {
 pub struct AppState {
     pub files: FilesState,
     pub clips: ClipsState,
+    pub devices: DevicesState,
     pub host: String,
     pub port: u16,
     pub token: String,
@@ -69,6 +71,7 @@ impl AppState {
     pub fn new(
         files: FilesState,
         clips: ClipsState,
+        devices: DevicesState,
         host: String,
         port: u16,
         sharing: bool,
@@ -81,6 +84,7 @@ impl AppState {
         Self {
             files,
             clips,
+            devices,
             host,
             port,
             sharing: std::sync::atomic::AtomicBool::new(sharing),
@@ -198,6 +202,33 @@ impl AppState {
 
 pub type SharedState = Arc<AppState>;
 
+/// 设备追踪中间件:每个请求刷新来源设备的最近活跃时间与登录用户
+async fn device_tracker_mw(
+    State(state): State<SharedState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let ip = req
+        .extensions()
+        .get::<axum::extract::ConnectInfo<SocketAddr>>()
+        .map(|c| c.0.ip().to_string())
+        .unwrap_or_default();
+    // 回环地址多为本机工具/健康检查,不算"连接过的设备"
+    if !ip.is_empty() && ip != "127.0.0.1" && ip != "::1" {
+        let ua = req
+            .headers()
+            .get(header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .chars()
+            .take(120)
+            .collect::<String>();
+        let user = state.session_user(req.headers());
+        state.devices.touch(&ip, &ua, user);
+    }
+    next.run(req).await
+}
+
 /// HTTP 服务入口(监听 socket 由 main.rs 预先绑定好传入)
 pub async fn serve(
     app: AppHandle,
@@ -248,6 +279,10 @@ fn router(app: AppHandle, state: SharedState) -> Router {
 
     let root_token_guard = token_guard.clone();
 
+    // 设备追踪:每个请求都刷新来源设备的最近活跃时间
+    // (挂在最外层,Sharing 开关关掉也不影响"曾经连过"的记录)
+    let device_tracker = axum::middleware::from_fn_with_state(state.clone(), device_tracker_mw);
+
     let sharing_guard = {
         let guard = guard_state.clone();
         axum::middleware::from_fn(
@@ -289,6 +324,7 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         )
         .route(&format!("{p}/file/{{name}}"), get(download))
         .route(&format!("{p}/api/file/{{name}}"), axum::routing::delete(api_delete_remote))
+        .route(&format!("{p}/api/files/batch-delete"), post(api_batch_delete))
         // token 关闭时的根路径入口(每条路由带 token 守卫)
         .route("/", get(mobile_home).layer(root_token_guard.clone()))
         .route("/app.js", get(mobile_js).layer(root_token_guard.clone()))
@@ -305,6 +341,10 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         .route(
             "/api/file/{name}",
             axum::routing::delete(api_delete_remote).layer(root_token_guard.clone()),
+        )
+        .route(
+            "/api/files/batch-delete",
+            post(api_batch_delete).layer(root_token_guard.clone()),
         )
         .route(
             "/api/clips",
@@ -341,6 +381,7 @@ fn router(app: AppHandle, state: SharedState) -> Router {
         )
         .fallback(not_found)
         .with_state(state)
+        .layer(device_tracker)
         // 桌面 UI(dev 时在 localhost:5176)fetch 本服务属于跨域,放行任意来源
         // token 本身就是鉴权,来源无关紧要
         .layer(CorsLayer::permissive())
@@ -419,18 +460,27 @@ async fn mobile_logo() -> Response {
 /// SSE:文件列表或文字记录任一变动时推送,手机端收到后刷新
 async fn sse_events(
     State(state): State<SharedState>,
+    connect: axum::extract::ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     if let Err(resp) = state.require_perm(&headers, Perm::Download) {
         return resp;
     }
+    // 标记该设备在线;连接断开(响应 body 被丢弃)时闭包持有的 guard 随之 Drop 清除
+    let client_ip = connect.0.ip().to_string();
+    state.devices.set_sse(&client_ip, true);
+    let online_guard = SseGuard {
+        ip: client_ip,
+        state: state.clone(),
+    };
     let files_v = state.files.version_rx();
     let clips_v = state.clips.version_rx();
     let stream = tokio_stream::StreamExt::merge(
         WatchStream::new(files_v).map(|v| ("files", v)),
         WatchStream::new(clips_v).map(|v| ("clips", v)),
     )
-    .map(|(kind, v)| {
+    .map(move |(kind, v)| {
+        let _ = &online_guard; // 仅借用:所有权在闭包里,流活多久在线标记就活多久
         Ok::<_, std::convert::Infallible>(
             Event::default()
                 .event("sync")
@@ -440,6 +490,18 @@ async fn sse_events(
     Sse::new(stream)
         .keep_alive(KeepAlive::default())
         .into_response()
+}
+
+/// SSE 在线标记守卫:Drop 时清除该设备的在线状态
+struct SseGuard {
+    ip: String,
+    state: SharedState,
+}
+
+impl Drop for SseGuard {
+    fn drop(&mut self) {
+        self.state.devices.set_sse(&self.ip, false);
+    }
 }
 
 async fn api_list_files(
@@ -476,6 +538,39 @@ async fn api_delete_remote(
         }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, format!("删除失败: {e}")).into_response(),
     }
+}
+
+/// 手机端批量删除文件(多选模式):逐个清洗文件名后删除,
+/// 全部尝试完才返回,成功数 > 0 时 bump 一次(SSE 只推一条)
+async fn api_batch_delete(
+    State(state): State<SharedState>,
+    headers: axum::http::HeaderMap,
+    Json(names): Json<Vec<String>>,
+) -> Response {
+    if let Err(resp) = state.require_perm(&headers, Perm::Delete) {
+        return resp;
+    }
+    if names.is_empty() {
+        return (StatusCode::BAD_REQUEST, "empty list").into_response();
+    }
+    let dir = state.files.dir();
+    let mut deleted = 0usize;
+    let mut failed = 0usize;
+    for name in &names {
+        let safe = crate::files::sanitize(name);
+        if safe.is_empty() {
+            failed += 1;
+            continue;
+        }
+        match tokio::fs::remove_file(dir.join(&safe)).await {
+            Ok(_) => deleted += 1,
+            Err(_) => failed += 1,
+        }
+    }
+    if deleted > 0 {
+        state.files.bump();
+    }
+    Json(json!({ "ok": failed == 0, "deleted": deleted, "failed": failed })).into_response()
 }
 
 async fn api_list_clips(
@@ -546,6 +641,7 @@ async fn api_delete_clip(
 async fn upload(
     axum::Extension(app): axum::Extension<AppHandle>,
     State(state): State<SharedState>,
+    connect: axum::extract::ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
@@ -629,7 +725,9 @@ async fn upload(
         return (StatusCode::BAD_REQUEST, "no file received").into_response();
     }
 
+    let client_ip = connect.0.ip().to_string();
     for (name, size) in &saved {
+        state.devices.record("in", name, *size, &client_ip);
         let _ = app.emit(
             "file-added",
             json!({ "name": name, "size": size, "source": "phone" }),
@@ -644,6 +742,7 @@ async fn upload(
 async fn upload_zip(
     axum::Extension(app): axum::Extension<AppHandle>,
     State(state): State<SharedState>,
+    connect: axum::extract::ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     mut multipart: Multipart,
 ) -> Response {
@@ -781,6 +880,7 @@ async fn upload_zip(
 
     match zipped {
         Ok(_) => {
+            state.devices.record("in", &zip_name, total, &connect.0.ip().to_string());
             let _ = app.emit(
                 "file-added",
                 json!({ "name": zip_name, "size": total, "source": "phone" }),
@@ -798,6 +898,7 @@ async fn upload_zip(
 /// 下载共享目录中的文件,支持 Range 断点续传(HTTP 206)
 async fn download(
     State(state): State<SharedState>,
+    connect: axum::extract::ConnectInfo<SocketAddr>,
     headers: axum::http::HeaderMap,
     AxumPath(name): AxumPath<String>,
 ) -> Response {
@@ -859,6 +960,8 @@ async fn download(
             .body(Body::from_stream(ReaderStream::new(take)))
             .expect("range response")
     } else {
+        // 完整下载(非 206 Range)计入传输历史
+        state.devices.record("out", &safe, total_len, &connect.0.ip().to_string());
         Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, mime.as_ref())
@@ -1034,6 +1137,25 @@ pub fn list_files(state: tauri::State<'_, crate::AppServer>) -> Vec<FileEntry> {
     file_entries(&state.shared.files.dir())
 }
 
+/// 连接过的设备(按最近活跃排序)
+#[tauri::command]
+pub fn list_devices(state: tauri::State<'_, crate::AppServer>) -> Vec<DeviceEntry> {
+    state.shared.devices.list_devices()
+}
+
+/// 传输历史(最新在前)
+#[tauri::command]
+pub fn list_history(state: tauri::State<'_, crate::AppServer>) -> Vec<TransferRecord> {
+    state.shared.devices.list_history()
+}
+
+/// 清空传输历史(设备表保留)
+#[tauri::command]
+pub fn clear_history(state: tauri::State<'_, crate::AppServer>) -> Result<(), String> {
+    state.shared.devices.clear_history();
+    Ok(())
+}
+
 #[tauri::command]
 pub fn open_folder(state: tauri::State<'_, crate::AppServer>) -> Result<(), String> {
     crate::files::open_in_explorer(&state.shared.files.dir())
@@ -1090,6 +1212,7 @@ pub async fn share_files(
 ) -> Result<(), String> {
     let mut copied = 0usize;
     let mut skipped: Vec<String> = Vec::new();
+    let mut saved_names: Vec<(String, u64)> = Vec::new();
     let dir = state.shared.files.dir();
     for p in &paths {
         let src = std::path::PathBuf::from(p);
@@ -1123,6 +1246,7 @@ pub async fn share_files(
                         "file-added",
                         json!({ "name": zip_name, "size": n, "source": "desktop" }),
                     );
+                    saved_names.push((zip_name, n));
                     copied += 1;
                 }
                 Err(e) => skipped.push(format!("{zip_name}({e})")),
@@ -1144,9 +1268,15 @@ pub async fn share_files(
             "file-added",
             json!({ "name": unique, "size": meta.len(), "source": "desktop" }),
         );
+        saved_names.push((unique, meta.len()));
         copied += 1;
     }
     state.shared.files.bump();
+    // 桌面自己的分享也进传输历史,来源标为本机 IP
+    let local_ip = state.shared.host.clone();
+    for (name, size) in saved_names {
+        state.shared.devices.record("in", &name, size, &local_ip);
+    }
     if copied == 0 && !skipped.is_empty() {
         return Err(format!("未能分享: {}(文件夹暂不支持)", skipped.join("、")));
     }
@@ -1646,7 +1776,10 @@ const MOBILE_HTML: &str = r##"<!doctype html>
       <input id="file-search" type="search" placeholder="搜索文件名…" autocomplete="off">
     </div>
     <section>
-      <h2>来自电脑的文件 <span id="count"></span></h2>
+      <div class="files-head">
+        <h2>来自电脑的文件 <span id="count"></span></h2>
+        <button id="select-btn" class="hidden head-btn">多选</button>
+      </div>
       <ul id="files"></ul>
       <p id="empty" class="hidden">电脑还没有分享文件</p>
       <p id="no-match" class="hidden">没有匹配的文件</p>
@@ -1666,6 +1799,15 @@ const MOBILE_HTML: &str = r##"<!doctype html>
   </div>
 </main>
 <button id="to-top" class="hidden" aria-label="回到顶部">↑</button>
+<!-- 文件多选模式的底部操作条 -->
+<div id="sel-bar" class="hidden">
+  <span id="sel-n">已选 0</span>
+  <div class="sel-ops">
+    <button id="sel-all">全选</button>
+    <button id="sel-del" class="danger">删除</button>
+    <button id="sel-cancel">取消</button>
+  </div>
+</div>
 <!-- 账号认证开启时的登录遮罩 -->
 <div id="login-mask" class="hidden">
   <div class="login-card">
@@ -1878,6 +2020,48 @@ li.done .fmeta { color: var(--ok); }
   transition: background .15s ease, color .15s ease;
 }
 .row-del:active { background: var(--danger-bg); color: var(--danger); }
+/* 文件多选:标题行 + 底部操作条 */
+.files-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.files-head h2 { margin-bottom: 0; }
+.head-btn {
+  border: 0; background: var(--accent-weak); color: var(--accent);
+  border-radius: 8px; font-size: 12px; font-weight: 600; font-family: inherit;
+  padding: 6px 12px; cursor: pointer;
+}
+.head-btn:active { opacity: .7; }
+li.sel-on {
+  background: var(--accent-weak); border-radius: 10px;
+  /* 高亮块向两侧延伸并留出内边距,避免图标/文字贴边 */
+  margin: 0 -8px; padding-left: 8px; padding-right: 8px;
+}
+.sel-tick {
+  flex: none; width: 22px; height: 22px; border-radius: 50%;
+  border: 1.5px solid var(--text-4); position: relative;
+  transition: background .12s ease, border-color .12s ease;
+}
+.sel-tick.on { background: var(--accent); border-color: var(--accent); }
+.sel-tick.on::after {
+  content: ''; position: absolute; left: 6px; top: 3px;
+  width: 6px; height: 10px; border: solid #fff; border-width: 0 2px 2px 0;
+  transform: rotate(45deg);
+}
+#sel-bar {
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; padding: 10px 16px calc(10px + env(safe-area-inset-bottom));
+  background: var(--card); border-top: 1px solid var(--card-border);
+  box-shadow: 0 -4px 20px rgba(23, 32, 58, 0.08);
+}
+#sel-bar span { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.sel-ops { display: flex; gap: 8px; }
+.sel-ops button {
+  border: 0; border-radius: 9px; background: var(--accent-weak); color: var(--accent);
+  font-size: 13px; font-weight: 600; font-family: inherit;
+  padding: 8px 14px; cursor: pointer;
+}
+.sel-ops button.danger { background: var(--danger-bg); color: var(--danger); }
+.sel-ops button:disabled { opacity: .5; }
+.sel-ops button:active { opacity: .7; }
 .hidden { display: none !important; }
 #empty { text-align: center; color: var(--text-3); font-size: 13px; padding: 16px 0; }
 
@@ -1994,11 +2178,22 @@ const MOBILE_JS: &str = r##"(function () {
   function isImage(name) { return /\.(png|jpe?g|gif|webp|bmp|svg)$/i.test(name); }
   // 全量文件缓存,搜索框在本地过滤
   var allFiles = [];
+  // 多选模式与已选文件名集合(SSE 刷新后保留)
+  var selecting = false;
+  var selected = {};
+
   function renderFiles(list) {
     allFiles = list;
+    // 刷新后剔除已不存在的已选项
+    var exists = {};
+    list.forEach(function (f) { exists[f.name] = true; });
+    Object.keys(selected).forEach(function (n) { if (!exists[n]) delete selected[n]; });
+    if (!list.length) exitSelect();
     applyFilter();
     // Tab 徽标
     $('tab-file-n').textContent = list.length ? '(' + list.length + ')' : '';
+    // 有删除权限才提供多选入口
+    $('select-btn').classList.toggle('hidden', !myPerms['delete'] || list.length === 0);
   }
   function applyFilter() {
     var q = ($('file-search').value || '').trim().toLowerCase();
@@ -2039,11 +2234,22 @@ const MOBILE_JS: &str = r##"(function () {
       li.addEventListener('contextmenu', function (ev) {
         ev.preventDefault();
         copyText(location.origin + a.getAttribute('href'));
-        toast('链接已复制,可发给其他人');
+        toast('链接已复制,可发给同一网络里的其他人');
       });
       li.appendChild(a);
-      // 有删除权限时,行尾显示删除按钮
-      if (myPerms['delete']) {
+      // 多选模式:行首显示选择圆圈,点行切换选中(不触发下载)
+      if (selecting) {
+        var tick = document.createElement('span');
+        tick.className = 'sel-tick' + (selected[f.name] ? ' on' : '');
+        li.insertBefore(tick, li.firstChild);
+        li.classList.toggle('sel-on', !!selected[f.name]);
+        li.addEventListener('click', function (ev) {
+          ev.preventDefault();
+          ev.stopPropagation();
+          toggleSelect(f.name);
+        });
+      } else if (myPerms['delete']) {
+        // 非选择模式才显示行内单删按钮
         var del = document.createElement('button');
         del.className = 'row-del';
         del.title = '删除';
@@ -2064,6 +2270,43 @@ const MOBILE_JS: &str = r##"(function () {
       }
       ul.appendChild(li);
     });
+  }
+
+  // ---- 文件多选删除 ----
+  function enterSelect() {
+    selecting = true;
+    selected = {};
+    $('sel-bar').classList.remove('hidden');
+    $('sel-n').textContent = '已选 0';
+    $('sel-all').textContent = '全选';
+    applyFilter();
+  }
+  function exitSelect() {
+    if (!selecting) return;
+    selecting = false;
+    selected = {};
+    $('sel-bar').classList.add('hidden');
+    applyFilter();
+  }
+  function toggleSelect(name) {
+    if (selected[name]) delete selected[name];
+    else selected[name] = true;
+    var n = Object.keys(selected).length;
+    $('sel-n').textContent = '已选 ' + n;
+    $('sel-all').textContent = n === allFiles.length ? '取消全选' : '全选';
+    // 只更新当前行,不整列表重绘
+    var ul = $('files');
+    for (var i = 0; i < ul.children.length; i++) {
+      var li = ul.children[i];
+      var tick = li.querySelector('.sel-tick');
+      if (tick && tick.nextSibling) {
+        var nm = tick.nextSibling.querySelector('.fname');
+        if (nm && nm.textContent === name) {
+          tick.classList.toggle('on', !!selected[name]);
+          li.classList.toggle('sel-on', !!selected[name]);
+        }
+      }
+    }
   }
 
   function loadFiles() {
@@ -2182,6 +2425,7 @@ const MOBILE_JS: &str = r##"(function () {
           hideLogin();
           loadFiles();
           loadClips();
+          startSse();
         } else {
           showLogin();
         }
@@ -2207,6 +2451,7 @@ const MOBILE_JS: &str = r##"(function () {
           hideLogin();
           loadFiles();
           loadClips();
+          startSse();
         });
       } else {
         $('login-err').textContent = '用户名或密码错误';
@@ -2500,6 +2745,43 @@ const MOBILE_JS: &str = r##"(function () {
   // ---- 文件/记录搜索(本地过滤) ----
   $('file-search').addEventListener('input', applyFilter);
   $('clip-search').addEventListener('input', applyClipFilter);
+
+  // ---- 文件多选删除 ----
+  $('select-btn').addEventListener('click', enterSelect);
+  $('sel-cancel').addEventListener('click', exitSelect);
+  $('sel-all').addEventListener('click', function () {
+    if (Object.keys(selected).length === allFiles.length) {
+      selected = {}; // 全选状态再点 = 全不选
+    } else {
+      selected = {};
+      allFiles.forEach(function (f) { selected[f.name] = true; });
+    }
+    $('sel-n').textContent = '已选 ' + Object.keys(selected).length;
+    $('sel-all').textContent = Object.keys(selected).length === allFiles.length ? '取消全选' : '全选';
+    applyFilter();
+  });
+  $('sel-del').addEventListener('click', function () {
+    var names = Object.keys(selected);
+    if (!names.length) { toast('还没有选择文件'); return; }
+    if (!confirm('删除选中的 ' + names.length + ' 个文件?\n此操作不可恢复。')) return;
+    $('sel-del').disabled = true;
+    fetch(base + 'api/files/batch-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(names)
+    }).then(function (r) {
+      if (r.status === 403) { toast('没有删除权限'); exitSelect(); return; }
+      return r.json().then(function (res) {
+        if (res && res.deleted > 0) toast('已删除 ' + res.deleted + ' 个文件');
+        else toast('删除失败');
+        if (res && res.failed > 0) toast(res.failed + ' 个文件删除失败');
+        exitSelect();
+        loadFiles();
+      });
+    }).catch(function () { toast('删除失败'); }).then(function () {
+      $('sel-del').disabled = false;
+    });
+  });
 
   // ---- 回到顶部 ----
   var toTop = $('to-top');

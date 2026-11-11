@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref } from 'vue'
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { invoke } from '@tauri-apps/api/core'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { open } from '@tauri-apps/plugin-dialog'
@@ -11,6 +11,7 @@ import AppTabs from './components/AppTabs.vue'
 import ConnectPanel from './components/ConnectPanel.vue'
 import FilesPanel from './components/FilesPanel.vue'
 import ClipsPanel from './components/ClipsPanel.vue'
+import DevicesPanel from './components/DevicesPanel.vue'
 import SettingsPanel from './components/SettingsPanel.vue'
 import SecurityPanel from './components/SecurityPanel.vue'
 import ToastStack from './components/ToastStack.vue'
@@ -18,7 +19,7 @@ import DragOverlay from './components/DragOverlay.vue'
 import AddAccountDialog from './components/AddAccountDialog.vue'
 import ConfirmDialog from './components/ConfirmDialog.vue'
 
-import type { AccountInput, AccountView, Clip, ConfirmKind, FileEntry, FrozenEntry, ServerInfo, Settings, Tab, Toast } from './types/app'
+import type { AccountInput, AccountView, Clip, ConfirmKind, DeviceEntry, FileEntry, FrozenEntry, ServerInfo, Settings, Tab, Toast, TransferRecord } from './types/app'
 import { fmtSize } from './utils/format'
 
 const tab = ref<Tab>('connect')
@@ -75,6 +76,9 @@ const authEnabled = ref(false)
 const accounts = ref<AccountView[]>([])
 // 冻结文件列表(多选模式或折叠面板展示)
 const frozen = ref<FrozenEntry[]>([])
+// 连接过的设备 / 传输历史(桌面"连接"页展示)
+const devices = ref<DeviceEntry[]>([])
+const history = ref<TransferRecord[]>([])
 // 自绘标题栏(固定小卡片窗口,无最大化)
 const appWindow = getCurrentWindow()
 
@@ -101,6 +105,25 @@ async function refreshFrozen() {
     frozen.value = await invoke<FrozenEntry[]>('list_frozen')
   } catch {
     // ignore
+  }
+}
+
+async function refreshDevices() {
+  try {
+    devices.value = await invoke<DeviceEntry[]>('list_devices')
+    history.value = await invoke<TransferRecord[]>('list_history')
+  } catch {
+    // ignore
+  }
+}
+
+async function clearHistory() {
+  try {
+    await invoke('clear_history')
+    toast('传输历史已清空')
+    await refreshDevices()
+  } catch (e) {
+    toast(`${e}`)
   }
 }
 
@@ -282,6 +305,10 @@ async function doDelete() {
   if (confirmKind.value === 'files-batch') {
     await deleteSelected(batchDeleteNames.value)
     selectionResetKey.value++
+  }
+  if (confirmKind.value === 'history-clear') {
+    confirmKind.value = null
+    await clearHistory()
   }
 }
 
@@ -587,6 +614,8 @@ async function chooseDir() {
 
 // 即改即存:端口/目录任一变化后 600ms 防抖保存
 let saveTimer: ReturnType<typeof setTimeout> | undefined
+// 连接页可见时的设备/历史轮询计时器
+let devTimer: ReturnType<typeof setInterval> | undefined
 
 function onSettingInput() {
   clearTimeout(saveTimer)
@@ -634,7 +663,23 @@ onMounted(async () => {
     loadSettings(),
     refreshFrozen(),
     refreshAccounts(),
+    refreshDevices(),
   ])
+
+  // 设备页可见时轻量轮询:在线状态/传输历史没有推送通道,
+  // 本地 invoke 开销可忽略;切走立即停
+  watch(
+    tab,
+    (t) => {
+      clearInterval(devTimer)
+      devTimer = undefined
+      if (t === 'devices') {
+        void refreshDevices()
+        devTimer = setInterval(refreshDevices, 5000)
+      }
+    },
+    { immediate: true },
+  )
 
   unlisteners.push(
     await listen<boolean>('sharing-changed', (event) => {
@@ -649,6 +694,7 @@ onMounted(async () => {
   unlisteners.push(
     await listen<{ name: string; size: number; source: string }>('file-added', async (event) => {
       await refreshFiles()
+      await refreshDevices()
       // 手机发来的才弹提示;桌面自己的操作(拖拽/选择/截图)已有各自的 toast
       if (event.payload.source === 'phone' && !uploading.value) {
         toast(`收到 ${event.payload.name}(${fmtSize(event.payload.size)})`)
@@ -659,6 +705,7 @@ onMounted(async () => {
   unlisteners.push(
     await listen<Clip>('clip-added', async (event) => {
       await refreshClips()
+      await refreshDevices()
       if (event.payload.source === 'phone') {
         toast('收到文字,已复制到剪贴板')
       }
@@ -676,6 +723,7 @@ onMounted(async () => {
 
 onUnmounted(() => {
   unlisteners.forEach((u) => u())
+  clearInterval(devTimer)
   window.removeEventListener('dragenter', onDragEnter)
   window.removeEventListener('dragover', onDragOver)
   window.removeEventListener('dragleave', onDragLeave)
@@ -736,6 +784,14 @@ onUnmounted(() => {
           @clear-clips="confirmKind = 'clips-clear'"
           @copy-text="copyText"
           @delete-clip="deleteClip"
+        />
+
+        <DevicesPanel
+          v-show="tab === 'devices'"
+          :devices="devices"
+          :history="history"
+          :server-info="info"
+          @clear-history="confirmKind = 'history-clear'"
         />
 
         <SettingsPanel

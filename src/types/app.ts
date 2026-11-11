@@ -4,6 +4,33 @@ export interface ServerInfo {
   port: number
   token: string
   inbox_dir: string
+  token_enabled?: boolean
+  auth_enabled?: boolean
+  sharing?: boolean
+}
+
+/** 连接过的设备(服务端按来源 IP 汇总) */
+export interface DeviceEntry {
+  ip: string
+  ua: string
+  username: string | null
+  first_seen: number
+  last_seen: number
+  /** 是否有活跃的 SSE 连接(在线) */
+  sse: boolean
+  uploads: number
+  downloads: number
+}
+
+/** 一次传输记录 */
+export interface TransferRecord {
+  id: number
+  time: number
+  /** in = 手机→电脑 | out = 电脑→手机 */
+  dir: 'in' | 'out'
+  name: string
+  size: number
+  ip: string
 }
 
 export interface FileEntry {
@@ -43,8 +70,8 @@ export interface FrozenEntry {
   size: number
 }
 
-export type Tab = 'connect' | 'files' | 'clips' | 'security' | 'settings'
-export type ConfirmKind = 'file' | 'clips-clear' | 'files-clear' | 'files-batch'
+export type Tab = 'connect' | 'files' | 'clips' | 'devices' | 'security' | 'settings'
+export type ConfirmKind = 'file' | 'clips-clear' | 'files-clear' | 'files-batch' | 'history-clear'
 export interface AccountInput {
   username: string
   password: string
