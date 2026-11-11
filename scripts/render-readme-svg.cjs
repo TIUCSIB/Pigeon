@@ -5,6 +5,7 @@ const path = require('path')
 const jobs = [
   { svg: 'assets/readme/hero.svg', out: 'assets/readme/preview/hero.png', width: 1200 },
   { svg: 'assets/readme/architecture.svg', out: 'assets/readme/preview/architecture.png', width: 1200 },
+  { svg: 'assets/readme/made-with-beautify.svg', out: 'assets/readme/preview/made-with-beautify.png', width: 420 },
 ]
 
 ;(async () => {
